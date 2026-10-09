@@ -18,28 +18,33 @@ func NewHistoryQueryUseCase(historyRepo repository.HistoryRepository) *HistoryQu
 	}
 }
 
-// GetRecent は最近の実行履歴を取得します
 func (u *HistoryQueryUseCase) GetRecent(ctx context.Context, limit int) ([]*entity.HistoryEntry, error) {
 	if limit <= 0 {
-		limit = 20
+		limit = 100
 	}
 	return u.historyRepo.ListRecent(ctx, limit)
 }
 
-// GetByID は指定 ID の履歴を取得します（コンテキストスナイピング用）
-func (u *HistoryQueryUseCase) GetByID(ctx context.Context, id string) (*entity.HistoryEntry, error) {
+func (u *HistoryQueryUseCase) GetByID(ctx context.Context, id int64) (*entity.HistoryEntry, error) {
 	entry, err := u.historyRepo.FindByID(ctx, id)
 	if err != nil {
 		return nil, fmt.Errorf("failed to fetch history entry: %w", err)
 	}
 	if entry == nil {
-		return nil, fmt.Errorf("history entry not found: %s", id)
+		return nil, fmt.Errorf("history entry not found: %d", id)
 	}
 	return entry, nil
 }
 
-// TogglePin は指定履歴のピン留め状態を反転します
-func (u *HistoryQueryUseCase) TogglePin(ctx context.Context, id string) (bool, error) {
+func (u *HistoryQueryUseCase) UpdateEntry(ctx context.Context, entry *entity.HistoryEntry) error {
+	return u.historyRepo.Update(ctx, entry)
+}
+
+func (u *HistoryQueryUseCase) DeleteEntry(ctx context.Context, id int64) error {
+	return u.historyRepo.Delete(ctx, id)
+}
+
+func (u *HistoryQueryUseCase) TogglePin(ctx context.Context, id int64) (bool, error) {
 	entry, err := u.GetByID(ctx, id)
 	if err != nil {
 		return false, err
@@ -52,7 +57,6 @@ func (u *HistoryQueryUseCase) TogglePin(ctx context.Context, id string) (bool, e
 	return newStatus, nil
 }
 
-// ListPinned はピン留めされた履歴の一覧を取得します
 func (u *HistoryQueryUseCase) ListPinned(ctx context.Context) ([]*entity.HistoryEntry, error) {
 	return u.historyRepo.ListPinned(ctx)
 }

@@ -15,6 +15,9 @@ func RunDynamicForm(vars []entity.TemplateVar) (map[string]string, error) {
 		return values, nil
 	}
 
+	// 1. 端末画面を完全に消去してカーソルを左上に戻す (ANSI エスケープ)
+	fmt.Print("\033[2J\033[H")
+
 	var fields []huh.Field
 
 	for _, v := range vars {
@@ -77,12 +80,18 @@ func RunDynamicForm(vars []entity.TemplateVar) (map[string]string, error) {
 		}
 	}
 
-	form := huh.NewForm(huh.NewGroup(fields...))
-	if err := form.Run(); err != nil {
+	form := huh.NewForm(huh.NewGroup(fields...)).
+		WithProgramOptions()
+
+	err := form.Run()
+
+	// 2. フォーム終了時にも画面を消去し、Cockpit への復帰残像を防ぐ
+	fmt.Print("\033[2J\033[H")
+
+	if err != nil {
 		return nil, err
 	}
 
-	// 各フィールドの入力値を抽出
 	for i, f := range fields {
 		vName := vars[i].Name
 		switch v := f.(type) {

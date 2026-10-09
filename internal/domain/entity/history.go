@@ -1,13 +1,11 @@
 package entity
 
 import (
-	"crypto/rand"
-	"encoding/hex"
 	"time"
 )
 
 type HistoryEntry struct {
-	ID             string            `db:"id" json:"id"`
+	ID             int64             `db:"id" json:"id"`
 	TemplateName   string            `db:"template_name" json:"template_name"`
 	Variables      map[string]string `db:"-" json:"variables"`
 	VariablesJSON  string            `db:"variables_json" json:"-"`
@@ -21,27 +19,11 @@ type HistoryEntry struct {
 }
 
 type HistoryItem struct {
-	ID           string
+	ID           int64
 	TemplateName string
 	Prompt       string
 	Response     string
 	Model        string
 	Tokens       TokenUsage
 	CreatedAt    time.Time
-}
-
-func NewHistoryItem(templateName, prompt, response, model string, tokens TokenUsage) HistoryItem {
-	b := make([]byte, 8)
-	_, _ = rand.Read(b)
-	id := hex.EncodeToString(b)
-
-	return HistoryItem{
-		ID:           id,
-		TemplateName: templateName,
-		Prompt:       prompt,
-		Response:     response,
-		Model:        model,
-		Tokens:       tokens,
-		CreatedAt:    time.Now().UTC(),
-	}
 }

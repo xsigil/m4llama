@@ -37,7 +37,7 @@ func main() {
 	// 引数なし起動はデフォルト設定で TUI を開始
 	if len(os.Args) < 2 {
 		baseURL := resolveBaseURL("", 0)
-		runTUI(dbPath, templateDir, baseURL)
+		runTUI(dbPath, templateDir, baseURL, false)
 		return
 	}
 
@@ -58,7 +58,6 @@ func main() {
 		portFlag := runFlags.Int("port", 0, "Target port (default: 8080)")
 		runFlags.IntVar(portFlag, "p", 0, "Target port (shorthand)")
 
-		// run フラグ以外のプロンプト引数・M4引数を抽出
 		if err := runFlags.Parse(subArgs); err != nil {
 			os.Exit(1)
 		}
@@ -75,7 +74,7 @@ func main() {
 		defer db.Close()
 
 		expander := infram4.NewExpander()
-		llmClient := llamaserver.NewClient(baseURL, 120*time.Second)
+		llmClient := llamaserver.NewClient(baseURL, 600*time.Second)
 		historyRepo := sqlite3.NewHistoryRepository(db)
 		queryUC := usecase.NewQueryLLMUseCase(expander, llmClient, historyRepo)
 
@@ -90,13 +89,15 @@ func main() {
 		tuiFlags.StringVar(hostFlag, "H", "", "Target host (shorthand)")
 		portFlag := tuiFlags.Int("port", 0, "Target port (default: 8080)")
 		tuiFlags.IntVar(portFlag, "p", 0, "Target port (shorthand)")
+		stdoutFlag := tuiFlags.Bool("stdout", false, "Output completion to stdout and exit on finish")
+		tuiFlags.BoolVar(stdoutFlag, "s", false, "Output completion to stdout (shorthand)")
 
 		if err := tuiFlags.Parse(subArgs); err != nil {
 			os.Exit(1)
 		}
 
 		baseURL := resolveBaseURL(*hostFlag, *portFlag)
-		runTUI(dbPath, templateDir, baseURL)
+		runTUI(dbPath, templateDir, baseURL, *stdoutFlag)
 
 	default:
 		printUsage()
@@ -104,7 +105,6 @@ func main() {
 	}
 }
 
-// resolveBaseURL はフラグ、環境変数、デフォルト値からエンドポイントURLを解決します
 func resolveBaseURL(host string, port int) string {
 	rawURL := os.Getenv("LLAMA_SERVER_URL")
 	if rawURL == "" {
@@ -135,11 +135,10 @@ func resolveBaseURL(host string, port int) string {
 		u.Host = currHost
 	}
 
-	// 末尾スラッシュをトリム
 	return strings.TrimRight(u.String(), "/")
 }
 
-func runTUI(dbPath, templateDir, baseURL string) {
+func runTUI(dbPath, templateDir, baseURL string, stdoutMode bool) {
 	ctx := context.Background()
 	db, err := sqlite3.NewDB(dbPath)
 	if err != nil {
@@ -149,12 +148,12 @@ func runTUI(dbPath, templateDir, baseURL string) {
 	defer db.Close()
 
 	expander := infram4.NewExpander()
-	llmClient := llamaserver.NewClient(baseURL, 120*time.Second)
+	llmClient := llamaserver.NewClient(baseURL, 600*time.Second)
 	historyRepo := sqlite3.NewHistoryRepository(db)
 	queryUC := usecase.NewQueryLLMUseCase(expander, llmClient, historyRepo)
 	historyUC := usecase.NewHistoryQueryUseCase(historyRepo)
 
-	runner := tui.NewRunner(queryUC, historyUC, expander, templateDir)
+	runner := tui.NewRunner(queryUC, historyUC, expander, templateDir, stdoutMode)
 	if err := runner.Start(ctx); err != nil {
 		fmt.Fprintf(os.Stderr, "TUI Error: %v\n", err)
 		os.Exit(1)
@@ -164,10 +163,11 @@ func runTUI(dbPath, templateDir, baseURL string) {
 func printUsage() {
 	fmt.Println("Usage: m4llama [subcommand] [flags] [args]")
 	fmt.Println("\nSubcommands:")
-	fmt.Println("  tui  [-H host] [-p port]   Start interactive cockpit (Default when no args given)")
-	fmt.Println("  m4   [m4-args...]           Run pure-Go standalone POSIX m4 macro processor")
-	fmt.Println("  run  [-H host] [-p port]    Expand prompt template and execute local LLM inference")
+	fmt.Println("  tui  [-H host] [-p port] [-s]  Start interactive cockpit (Default when no args given)")
+	fmt.Println("  m4   [m4-args...]              Run pure-Go standalone POSIX m4 macro processor")
+	fmt.Println("  run  [-H host] [-p port]       Expand prompt template and execute local LLM inference")
 	fmt.Println("\nFlags:")
 	fmt.Println("  -H, --host string   Llama server host (default: 127.0.0.1 or LLAMA_SERVER_URL)")
 	fmt.Println("  -p, --port int      Llama server port (default: 8080 or LLAMA_SERVER_URL)")
+	fmt.Println("  -s, --stdout        Output completion to stdout and exit on finish (tui only)")
 }

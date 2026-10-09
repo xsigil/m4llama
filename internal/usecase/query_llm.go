@@ -2,8 +2,6 @@ package usecase
 
 import (
 	"context"
-	"crypto/rand"
-	"encoding/hex"
 	"fmt"
 	"time"
 
@@ -19,10 +17,11 @@ type QueryLLMInput struct {
 	Temperature     float64
 	MaxTokens       int
 	DryRunCurl      bool
+	CustomMessages  []entity.Message
 }
 
 type QueryLLMOutput struct {
-	HistoryID   string
+	HistoryID   int64
 	Prompt      string
 	Completion  string
 	Tokens      entity.TokenUsage
@@ -44,29 +43,52 @@ func NewQueryLLMUseCase(expander repository.MacroExpander, client repository.LLM
 }
 
 func (uc *QueryLLMUseCase) Execute(ctx context.Context, in QueryLLMInput) (*QueryLLMOutput, error) {
-	prompt, err := uc.expander.Expand(ctx, in.TemplateContent, in.Variables)
-	if err != nil {
-		return nil, fmt.Errorf("template expansion failed: %w", err)
+	return uc.ExecuteStream(ctx, in, nil)
+}
+
+func (uc *QueryLLMUseCase) ExecuteStream(ctx context.Context, in QueryLLMInput, onToken func(chunk string)) (*QueryLLMOutput, error) {
+	var prompt string
+	var err error
+
+	if len(in.CustomMessages) == 0 {
+		prompt, err = uc.expander.Expand(ctx, in.TemplateContent, in.Variables)
+		if err != nil {
+			return nil, fmt.Errorf("template expansion failed: %w", err)
+		}
+	} else {
+		for i := len(in.CustomMessages) - 1; i >= 0; i-- {
+			if in.CustomMessages[i].Role == "user" {
+				prompt = in.CustomMessages[i].Content
+				break
+			}
+		}
 	}
 
 	modelName := in.Model
-	if modelName == "" || modelName == "default" {
-		modelName = "/models/model.gguf"
+	if modelName == "default" || modelName == "/models/model.gguf" {
+		modelName = ""
 	}
 
 	maxTokens := in.MaxTokens
 	if maxTokens <= 0 {
-		maxTokens = 256 // デフォルトで過度な無限ループ思考を防止
+		maxTokens = 4096
+	}
+
+	var reqMessages []entity.Message
+	if len(in.CustomMessages) > 0 {
+		reqMessages = in.CustomMessages
+	} else {
+		reqMessages = []entity.Message{
+			{Role: "user", Content: prompt},
+		}
 	}
 
 	req := entity.CompletionRequest{
 		Model:       modelName,
 		Temperature: in.Temperature,
 		MaxTokens:   maxTokens,
-		Stream:      false,
-		Messages: []entity.Message{
-			{Role: "user", Content: prompt},
-		},
+		Stream:      (onToken != nil),
+		Messages:    reqMessages,
 	}
 
 	if in.DryRunCurl {
@@ -77,18 +99,17 @@ func (uc *QueryLLMUseCase) Execute(ctx context.Context, in QueryLLMInput) (*Quer
 		return &QueryLLMOutput{Prompt: prompt, CurlCommand: curlCmd}, nil
 	}
 
-	resp, err := uc.llmClient.Complete(ctx, req)
+	var resp *entity.CompletionResponse
+	if onToken != nil {
+		resp, err = uc.llmClient.CompleteStream(ctx, req, onToken)
+	} else {
+		resp, err = uc.llmClient.Complete(ctx, req)
+	}
 	if err != nil {
 		return nil, fmt.Errorf("llm inference failed: %w", err)
 	}
 
-	// ランダム ID の生成
-	b := make([]byte, 8)
-	_, _ = rand.Read(b)
-	entryID := hex.EncodeToString(b)
-
 	entry := &entity.HistoryEntry{
-		ID:             entryID,
 		TemplateName:   in.TemplateName,
 		Variables:      in.Variables,
 		ExpandedPrompt: prompt,

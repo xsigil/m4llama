@@ -28,10 +28,9 @@ func RunPromptCommand(ctx context.Context, queryUC *usecase.QueryLLMUseCase, arg
 	fs.Var(&defs, "D", "Define variable: NAME=VALUE")
 	model := fs.String("model", "/models/model.gguf", "Model name or identifier")
 	temp := fs.Float64("temperature", 0.7, "Temperature")
-	maxTokens := fs.Int("max-tokens", 256, "Max tokens to generate")
+	maxTokens := fs.Int("max-tokens", -1, "Max tokens to generate (-1: unlimited)")
 	dryRun := fs.Bool("curl", false, "Output curl command without executing inference")
 
-	// 引数を正規化して -DVAR=VAL を ["-D", "VAR=VAL"] に展開
 	if err := fs.Parse(NormalizeDFlags(args)); err != nil {
 		return err
 	}
@@ -75,7 +74,7 @@ func RunPromptCommand(ctx context.Context, queryUC *usecase.QueryLLMUseCase, arg
 		return nil
 	}
 
-	fmt.Printf("[Completion ID: %s | Total Tokens: %d]\n\n", out.HistoryID, out.Tokens.TotalTokens)
+	fmt.Printf("[Completion ID: #%d | Total Tokens: %d]\n\n", out.HistoryID, out.Tokens.TotalTokens)
 	fmt.Println(out.Completion)
 	return nil
 }

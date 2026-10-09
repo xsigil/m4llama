@@ -1,6 +1,7 @@
 package llamaserver
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"encoding/json"
@@ -38,6 +39,21 @@ type openAIResponse struct {
 	} `json:"usage"`
 }
 
+type openAIStreamChunk struct {
+	Choices []struct {
+		Delta struct {
+			Content          string `json:"content"`
+			ReasoningContent string `json:"reasoning_content"`
+		} `json:"delta"`
+		FinishReason *string `json:"finish_reason"`
+	} `json:"choices"`
+	Usage *struct {
+		PromptTokens     int `json:"prompt_tokens"`
+		CompletionTokens int `json:"completion_tokens"`
+		TotalTokens      int `json:"total_tokens"`
+	} `json:"usage"`
+}
+
 func NewClient(baseURL string, timeout time.Duration) *Client {
 	cleanURL := strings.TrimRight(baseURL, "/")
 	return &Client{
@@ -50,6 +66,7 @@ func NewClient(baseURL string, timeout time.Duration) *Client {
 }
 
 func (c *Client) Complete(ctx context.Context, req entity.CompletionRequest) (*entity.CompletionResponse, error) {
+	req.Stream = false
 	endpoint := fmt.Sprintf("%s/v1/chat/completions", c.baseURL)
 
 	bodyBytes, err := json.Marshal(req)
@@ -75,7 +92,7 @@ func (c *Client) Complete(ctx context.Context, req entity.CompletionRequest) (*e
 	}
 
 	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("llama-server returned status %d: %s", resp.StatusCode, string(respBody))
+		return nil, fmt.Errorf("llama-server error %d: %s", resp.StatusCode, string(respBody))
 	}
 
 	var oaiResp openAIResponse
@@ -89,7 +106,6 @@ func (c *Client) Complete(ctx context.Context, req entity.CompletionRequest) (*e
 		if msg.Content != "" {
 			content = msg.Content
 		} else if msg.ReasoningContent != "" {
-			// content が空で reasoning_content のみがある場合は思考内容を出力
 			content = msg.ReasoningContent
 		}
 	}
@@ -101,6 +117,87 @@ func (c *Client) Complete(ctx context.Context, req entity.CompletionRequest) (*e
 			PromptTokens:     oaiResp.Usage.PromptTokens,
 			CompletionTokens: oaiResp.Usage.CompletionTokens,
 			TotalTokens:      oaiResp.Usage.TotalTokens,
+		},
+	}, nil
+}
+
+func (c *Client) CompleteStream(ctx context.Context, req entity.CompletionRequest, onToken func(chunk string)) (*entity.CompletionResponse, error) {
+	req.Stream = true
+	endpoint := fmt.Sprintf("%s/v1/chat/completions", c.baseURL)
+
+	bodyBytes, err := json.Marshal(req)
+	if err != nil {
+		return nil, fmt.Errorf("failed to marshal request: %w", err)
+	}
+
+	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(bodyBytes))
+	if err != nil {
+		return nil, fmt.Errorf("failed to create http request: %w", err)
+	}
+	httpReq.Header.Set("Content-Type", "application/json")
+	httpReq.Header.Set("Accept", "text/event-stream")
+
+	resp, err := c.httpClient.Do(httpReq)
+	if err != nil {
+		return nil, fmt.Errorf("inference request failed: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(resp.Body)
+		return nil, fmt.Errorf("llama-server error %d: %s", resp.StatusCode, strings.TrimSpace(string(body)))
+	}
+
+	scanner := bufio.NewScanner(resp.Body)
+	var fullContent strings.Builder
+	totalTokens := 0
+
+	for scanner.Scan() {
+		line := scanner.Text()
+		if !strings.HasPrefix(line, "data: ") {
+			continue
+		}
+		data := strings.TrimPrefix(line, "data: ")
+		if strings.TrimSpace(data) == "[DONE]" {
+			break
+		}
+
+		var chunk openAIStreamChunk
+		if err := json.Unmarshal([]byte(data), &chunk); err != nil {
+			continue
+		}
+
+		if len(chunk.Choices) > 0 {
+			delta := chunk.Choices[0].Delta
+			tokenText := delta.Content
+			if tokenText == "" {
+				tokenText = delta.ReasoningContent
+			}
+			if tokenText != "" {
+				fullContent.WriteString(tokenText)
+				if onToken != nil {
+					onToken(tokenText)
+				}
+			}
+		}
+
+		if chunk.Usage != nil {
+			totalTokens = chunk.Usage.TotalTokens
+		}
+	}
+
+	if err := scanner.Err(); err != nil {
+		return nil, fmt.Errorf("stream read error: %w", err)
+	}
+
+	if totalTokens == 0 {
+		totalTokens = len(strings.Fields(fullContent.String()))
+	}
+
+	return &entity.CompletionResponse{
+		Content: fullContent.String(),
+		Usage: entity.TokenUsage{
+			TotalTokens: totalTokens,
 		},
 	}, nil
 }

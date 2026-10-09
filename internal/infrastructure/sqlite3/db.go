@@ -12,7 +12,7 @@ import (
 
 const schemaDDL = `
 CREATE TABLE IF NOT EXISTS history (
-    id TEXT PRIMARY KEY,
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
     template_name TEXT NOT NULL,
     variables_json TEXT NOT NULL DEFAULT '{}',
     expanded_prompt TEXT NOT NULL,
