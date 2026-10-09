@@ -14,13 +14,16 @@ type ChatMessage struct {
 }
 
 type CompletionRequest struct {
-	Model       string        `json:"model,omitempty"`
-	Messages    []ChatMessage `json:"messages,omitempty"`
-	Prompt      string        `json:"prompt,omitempty"` // 生プロンプト推論用 (/completion)
-	Temperature float64       `json:"temperature,omitempty"`
-	TopP        float64       `json:"top_p,omitempty"`
-	MaxTokens   int           `json:"max_tokens,omitempty"`
-	Stream      bool          `json:"stream"`
+	Model       string    `json:"model"`
+	Messages    []Message `json:"messages"`
+	Temperature float64   `json:"temperature,omitempty"`
+	MaxTokens   int       `json:"max_tokens,omitempty"`
+	Stream      bool      `json:"stream"`
+}
+
+type Message struct {
+	Role    string `json:"role"`
+	Content string `json:"content"`
 }
 
 type TokenUsage struct {
@@ -30,7 +33,7 @@ type TokenUsage struct {
 }
 
 type CompletionResponse struct {
-	ID      string       `json:"id"`
-	Content string       `json:"content"`
-	Usage   TokenUsage   `json:"usage"`
+	ID      string     `json:"id"`
+	Content string     `json:"content"`
+	Usage   TokenUsage `json:"usage"`
 }

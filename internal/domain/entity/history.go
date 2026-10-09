@@ -1,6 +1,8 @@
 package entity
 
 import (
+	"crypto/rand"
+	"encoding/hex"
 	"time"
 )
 
@@ -16,4 +18,30 @@ type HistoryEntry struct {
 	TotalTokens    int               `db:"total_tokens" json:"total_tokens"`
 	Pinned         bool              `db:"pinned" json:"pinned"`
 	CreatedAt      time.Time         `db:"created_at" json:"created_at"`
+}
+
+type HistoryItem struct {
+	ID           string
+	TemplateName string
+	Prompt       string
+	Response     string
+	Model        string
+	Tokens       TokenUsage
+	CreatedAt    time.Time
+}
+
+func NewHistoryItem(templateName, prompt, response, model string, tokens TokenUsage) HistoryItem {
+	b := make([]byte, 8)
+	_, _ = rand.Read(b)
+	id := hex.EncodeToString(b)
+
+	return HistoryItem{
+		ID:           id,
+		TemplateName: templateName,
+		Prompt:       prompt,
+		Response:     response,
+		Model:        model,
+		Tokens:       tokens,
+		CreatedAt:    time.Now().UTC(),
+	}
 }

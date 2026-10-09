@@ -2,6 +2,8 @@ package usecase
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"fmt"
 	"time"
 
@@ -15,15 +17,16 @@ type QueryLLMInput struct {
 	Variables       map[string]string
 	Model           string
 	Temperature     float64
-	DryRunCurl      bool // true の場合は通信せず curl コマンドを返す
+	MaxTokens       int
+	DryRunCurl      bool
 }
 
 type QueryLLMOutput struct {
-	ExpandedPrompt string
-	Completion     string
-	CurlCommand    string
-	Tokens         entity.TokenUsage
-	HistoryID      string
+	HistoryID   string
+	Prompt      string
+	Completion  string
+	Tokens      entity.TokenUsage
+	CurlCommand string
 }
 
 type QueryLLMUseCase struct {
@@ -32,75 +35,76 @@ type QueryLLMUseCase struct {
 	historyRepo repository.HistoryRepository
 }
 
-func NewQueryLLMUseCase(
-	expander repository.MacroExpander,
-	llmClient repository.LLMClient,
-	historyRepo repository.HistoryRepository,
-) *QueryLLMUseCase {
+func NewQueryLLMUseCase(expander repository.MacroExpander, client repository.LLMClient, history repository.HistoryRepository) *QueryLLMUseCase {
 	return &QueryLLMUseCase{
 		expander:    expander,
-		llmClient:   llmClient,
-		historyRepo: historyRepo,
+		llmClient:   client,
+		historyRepo: history,
 	}
 }
 
-func (u *QueryLLMUseCase) Execute(ctx context.Context, in QueryLLMInput) (*QueryLLMOutput, error) {
-	// 1. マクロ展開
-	expanded, err := u.expander.Expand(ctx, in.TemplateContent, in.Variables)
+func (uc *QueryLLMUseCase) Execute(ctx context.Context, in QueryLLMInput) (*QueryLLMOutput, error) {
+	prompt, err := uc.expander.Expand(ctx, in.TemplateContent, in.Variables)
 	if err != nil {
-		return nil, fmt.Errorf("macro expansion failed: %w", err)
+		return nil, fmt.Errorf("template expansion failed: %w", err)
+	}
+
+	modelName := in.Model
+	if modelName == "" || modelName == "default" {
+		modelName = "/models/model.gguf"
+	}
+
+	maxTokens := in.MaxTokens
+	if maxTokens <= 0 {
+		maxTokens = 256 // デフォルトで過度な無限ループ思考を防止
 	}
 
 	req := entity.CompletionRequest{
-		Model: in.Model,
-		Messages: []entity.ChatMessage{
-			{Role: entity.RoleUser, Content: expanded},
-		},
+		Model:       modelName,
 		Temperature: in.Temperature,
+		MaxTokens:   maxTokens,
+		Stream:      false,
+		Messages: []entity.Message{
+			{Role: "user", Content: prompt},
+		},
 	}
 
-	// 2. dry-run / curl export の場合は Go で通信せず curl コマンドを生成して終了
 	if in.DryRunCurl {
-		curlCmd, err := u.llmClient.EmitCurl(req)
+		curlCmd, err := uc.llmClient.EmitCurl(req)
 		if err != nil {
-			return nil, fmt.Errorf("failed to emit curl command: %w", err)
+			return nil, fmt.Errorf("curl generation failed: %w", err)
 		}
-		return &QueryLLMOutput{
-			ExpandedPrompt: expanded,
-			CurlCommand:    curlCmd,
-		}, nil
+		return &QueryLLMOutput{Prompt: prompt, CurlCommand: curlCmd}, nil
 	}
 
-	// 3. 通常実行: Go の net/http で直接推論リクエスト
-	resp, err := u.llmClient.Complete(ctx, req)
+	resp, err := uc.llmClient.Complete(ctx, req)
 	if err != nil {
 		return nil, fmt.Errorf("llm inference failed: %w", err)
 	}
 
-	// 4. 実行履歴のスナップショットを SQLite に記録
-	historyID := fmt.Sprintf("%d", time.Now().UnixNano())
-	historyEntry := &entity.HistoryEntry{
-		ID:             historyID,
+	// ランダム ID の生成
+	b := make([]byte, 8)
+	_, _ = rand.Read(b)
+	entryID := hex.EncodeToString(b)
+
+	entry := &entity.HistoryEntry{
+		ID:             entryID,
 		TemplateName:   in.TemplateName,
 		Variables:      in.Variables,
-		ExpandedPrompt: expanded,
+		ExpandedPrompt: prompt,
 		Completion:     resp.Content,
 		PromptTokens:   resp.Usage.PromptTokens,
 		CompTokens:     resp.Usage.CompletionTokens,
 		TotalTokens:    resp.Usage.TotalTokens,
 		Pinned:         false,
-		CreatedAt:      time.Now(),
+		CreatedAt:      time.Now().UTC(),
 	}
-
-	if err := u.historyRepo.Save(ctx, historyEntry); err != nil {
-		// 履歴保存の失敗はログや警告に留めることも可能だが、ここでは整合性を考慮
-		return nil, fmt.Errorf("failed to persist history: %w", err)
-	}
+	_ = uc.historyRepo.Save(ctx, entry)
 
 	return &QueryLLMOutput{
-		ExpandedPrompt: expanded,
-		Completion:     resp.Content,
-		Tokens:         resp.Usage,
-		HistoryID:      historyID,
+		HistoryID:  entry.ID,
+		Prompt:     prompt,
+		Completion: resp.Content,
+		Tokens:     resp.Usage,
 	}, nil
 }

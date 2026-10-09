@@ -5,53 +5,77 @@ import (
 	"flag"
 	"fmt"
 	"os"
+	"strings"
 
 	"github.com/xsigil/m4llama/internal/usecase"
 )
 
+type arrayFlags []string
+
+func (i *arrayFlags) String() string {
+	return strings.Join(*i, ", ")
+}
+
+func (i *arrayFlags) Set(value string) error {
+	*i = append(*i, value)
+	return nil
+}
+
 func RunPromptCommand(ctx context.Context, queryUC *usecase.QueryLLMUseCase, args []string) error {
 	fs := flag.NewFlagSet("run", flag.ContinueOnError)
 
-	defines := make(MapFlag)
-	fs.Var(&defines, "D", "Template variable (e.g. -DVAR=VAL)")
+	var defs arrayFlags
+	fs.Var(&defs, "D", "Define variable: NAME=VALUE")
+	model := fs.String("model", "/models/model.gguf", "Model name or identifier")
+	temp := fs.Float64("temperature", 0.7, "Temperature")
+	maxTokens := fs.Int("max-tokens", 256, "Max tokens to generate")
+	dryRun := fs.Bool("curl", false, "Output curl command without executing inference")
 
-	model := fs.String("model", "default", "Target model name")
-	temp := fs.Float64("temperature", 0.7, "Temperature parameter")
-	dryRun := fs.Bool("dry-run", false, "Output curl command without sending inference request")
-	exportCurl := fs.Bool("export-curl", false, "Alias for --dry-run")
-
+	// 引数を正規化して -DVAR=VAL を ["-D", "VAR=VAL"] に展開
 	if err := fs.Parse(NormalizeDFlags(args)); err != nil {
 		return err
 	}
 
-	templateFiles := fs.Args()
-	if len(templateFiles) == 0 {
-		return fmt.Errorf("usage: m4llama run [flags] <template.m4>")
+	rest := fs.Args()
+	if len(rest) == 0 {
+		return fmt.Errorf("missing template file path")
 	}
+	tmplPath := rest[0]
 
-	tmplPath := templateFiles[0]
-	content, err := os.ReadFile(tmplPath)
+	contentBytes, err := os.ReadFile(tmplPath)
 	if err != nil {
 		return fmt.Errorf("failed to read template: %w", err)
 	}
 
+	variables := make(map[string]string)
+	for _, d := range defs {
+		parts := strings.SplitN(d, "=", 2)
+		if len(parts) == 2 {
+			variables[parts[0]] = parts[1]
+		} else {
+			variables[parts[0]] = ""
+		}
+	}
+
 	out, err := queryUC.Execute(ctx, usecase.QueryLLMInput{
 		TemplateName:    tmplPath,
-		TemplateContent: string(content),
-		Variables:       defines,
+		TemplateContent: string(contentBytes),
+		Variables:       variables,
 		Model:           *model,
 		Temperature:     *temp,
-		DryRunCurl:      *dryRun || *exportCurl,
+		MaxTokens:       *maxTokens,
+		DryRunCurl:      *dryRun,
 	})
 	if err != nil {
 		return err
 	}
 
-	if *dryRun || *exportCurl {
+	if *dryRun {
 		fmt.Println(out.CurlCommand)
 		return nil
 	}
 
+	fmt.Printf("[Completion ID: %s | Total Tokens: %d]\n\n", out.HistoryID, out.Tokens.TotalTokens)
 	fmt.Println(out.Completion)
 	return nil
 }

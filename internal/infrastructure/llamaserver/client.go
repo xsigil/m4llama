@@ -26,8 +26,9 @@ type openAIResponse struct {
 	ID      string `json:"id"`
 	Choices []struct {
 		Message struct {
-			Role    string `json:"role"`
-			Content string `json:"content"`
+			Role             string `json:"role"`
+			Content          string `json:"content"`
+			ReasoningContent string `json:"reasoning_content"`
 		} `json:"message"`
 	} `json:"choices"`
 	Usage struct {
@@ -84,7 +85,13 @@ func (c *Client) Complete(ctx context.Context, req entity.CompletionRequest) (*e
 
 	content := ""
 	if len(oaiResp.Choices) > 0 {
-		content = oaiResp.Choices[0].Message.Content
+		msg := oaiResp.Choices[0].Message
+		if msg.Content != "" {
+			content = msg.Content
+		} else if msg.ReasoningContent != "" {
+			// content が空で reasoning_content のみがある場合は思考内容を出力
+			content = msg.ReasoningContent
+		}
 	}
 
 	return &entity.CompletionResponse{
