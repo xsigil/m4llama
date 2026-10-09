@@ -6,7 +6,7 @@ import (
 	"regexp"
 	"strings"
 
-	"m4llama/internal/domain/entity"
+	"github.com/xsigil/m4llama/internal/domain/entity"
 )
 
 // 例: # @var TASK_NAME [string] "タスクの概要を入力してください" "デフォルト値"

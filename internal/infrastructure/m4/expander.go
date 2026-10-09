@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"strings"
 
-	pkgm4 "m4llama/pkg/m4"
+	pkgm4 "github.com/xsigil/m4llama/pkg/m4"
 )
 
 func (e *Expander) Expand(ctx context.Context, templateContent string, vars map[string]string) (string, error) {

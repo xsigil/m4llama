@@ -1,4 +1,4 @@
-module m4llama
+module github.com/xsigil/m4llama
 
 go 1.26.0
 

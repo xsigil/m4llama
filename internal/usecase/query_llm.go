@@ -5,8 +5,8 @@ import (
 	"fmt"
 	"time"
 
-	"m4llama/internal/domain/entity"
-	"m4llama/internal/domain/repository"
+	"github.com/xsigil/m4llama/internal/domain/entity"
+	"github.com/xsigil/m4llama/internal/domain/repository"
 )
 
 type QueryLLMInput struct {

@@ -2,7 +2,7 @@ package repository
 
 import (
 	"context"
-	"m4llama/internal/domain/entity"
+	"github.com/xsigil/m4llama/internal/domain/entity"
 )
 
 type MacroExpander interface {
