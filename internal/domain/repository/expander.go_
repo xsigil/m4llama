@@ -1,0 +1,12 @@
+package repository
+
+import (
+	"context"
+
+	"github.com/xsigil/m4llama/internal/domain/entity"
+)
+
+type M4Expander interface {
+	Expand(ctx context.Context, tmpl string, vars map[string]string) (string, error)
+	ParseAnnotations(ctx context.Context, tmpl string) ([]entity.TemplateVar, error)
+}

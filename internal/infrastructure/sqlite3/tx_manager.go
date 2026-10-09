@@ -6,7 +6,7 @@ import (
 	"fmt"
 
 	"github.com/jmoiron/sqlx"
-	"m4llama/internal/domain/repository"
+	"github.com/xsigil/m4llama/internal/domain/repository"
 )
 
 type txContextKey struct{}
