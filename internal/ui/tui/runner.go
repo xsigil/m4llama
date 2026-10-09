@@ -1,7 +1,9 @@
 package tui
 
 import (
+	"bufio"
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -31,6 +33,8 @@ func NewRunner(queryUC *usecase.QueryLLMUseCase, historyUC *usecase.HistoryQuery
 }
 
 func (r *Runner) Start(ctx context.Context) error {
+	reader := bufio.NewReader(os.Stdin)
+
 	for {
 		// 1. テンプレート一覧のスキャン
 		candidates, err := ScanTemplates(r.templateDir, ".")
@@ -41,8 +45,13 @@ func (r *Runner) Start(ctx context.Context) error {
 		// 2. セレクター起動 (ベースディレクトリからの相対パス表示)
 		chosenTmpl, err := SelectTemplate(r.templateDir, []string{createNewOption}, candidates)
 		if err != nil {
+			// Esc や Ctrl+C でキャンセルされた場合はエラーではなく正常終了
+			if strings.Contains(err.Error(), "canceled") {
+				return nil
+			}
 			return err
 		}
+
 		// 新規作成の場合
 		if chosenTmpl == createNewOption {
 			newFileName := ""
@@ -85,11 +94,19 @@ func (r *Runner) Start(ctx context.Context) error {
 				huh.NewOption("🚀 Run Inference (推論実行)", "run"),
 				huh.NewOption("📝 Edit in Neovim (エディタで編集)", "edit"),
 				huh.NewOption("📋 Export curl command (curl エクスポート)", "curl"),
+				huh.NewOption("↩️  Back to Template Selection (戻る)", "back"),
 			).
 			Value(&action)
 
 		if err := actionSelect.Run(); err != nil {
+			if errors.Is(err, huh.ErrUserAborted) {
+				continue
+			}
 			return err
+		}
+
+		if action == "back" {
+			continue
 		}
 
 		if action == "edit" {
@@ -102,19 +119,24 @@ func (r *Runner) Start(ctx context.Context) error {
 		// 4. テンプレート内容の読み込み
 		contentBytes, err := os.ReadFile(chosenTmpl)
 		if err != nil {
-			return fmt.Errorf("read template failed: %w", err)
+			fmt.Fprintf(os.Stderr, "Error: read template failed: %v\n", err)
+			continue
 		}
 		tmplContent := string(contentBytes)
 
 		// 5. 注釈変数の解析
 		vars, err := r.m4Expander.ParseAnnotations(ctx, tmplContent)
 		if err != nil {
-			return fmt.Errorf("parse annotations failed: %w", err)
+			fmt.Fprintf(os.Stderr, "Error: parse annotations failed: %v\n", err)
+			continue
 		}
 
 		// 6. 動的フォーム入力
 		userVars, err := RunDynamicForm(vars)
 		if err != nil {
+			if errors.Is(err, huh.ErrUserAborted) {
+				continue
+			}
 			return err
 		}
 
@@ -129,7 +151,10 @@ func (r *Runner) Start(ctx context.Context) error {
 			DryRunCurl:      (action == "curl"),
 		})
 		if err != nil {
-			return err
+			fmt.Fprintf(os.Stderr, "\nInference Error: %v\n", err)
+			fmt.Print("\nPress [Enter] to return to templates...")
+			_, _ = reader.ReadString('\n')
+			continue
 		}
 
 		// 8. 結果出力
@@ -143,8 +168,8 @@ func (r *Runner) Start(ctx context.Context) error {
 		}
 		fmt.Println("------------------------------------------------------------")
 
-		break
+		// 9. 結果確認後、Enter キーで選択画面へループ
+		fmt.Print("\nPress [Enter] to return to template list (Ctrl+C to quit)... ")
+		_, _ = reader.ReadString('\n')
 	}
-
-	return nil
 }

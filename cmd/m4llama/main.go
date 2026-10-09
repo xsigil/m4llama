@@ -2,9 +2,12 @@ package main
 
 import (
 	"context"
+	"flag"
 	"fmt"
+	"net/url"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/xsigil/m4llama/internal/infrastructure/llamaserver"
@@ -22,10 +25,6 @@ func main() {
 	}
 	dbPath := filepath.Join(homeDir, ".local", "share", "m4llama", "history.db")
 
-	// ワークスペースディレクトリの解決順序:
-	// 1. 環境変数 M4LLAMA_WORKSPACE
-	// 2. カレントディレクトリの templates/
-	// 3. ~/.config/m4llama/templates
 	templateDir := os.Getenv("M4LLAMA_WORKSPACE")
 	if templateDir == "" {
 		if _, err := os.Stat("templates"); err == nil {
@@ -35,9 +34,10 @@ func main() {
 		}
 	}
 
-	// 引数なし起動はデフォルトで TUI を開始
+	// 引数なし起動はデフォルト設定で TUI を開始
 	if len(os.Args) < 2 {
-		runTUI(dbPath, templateDir)
+		baseURL := resolveBaseURL("", 0)
+		runTUI(dbPath, templateDir, baseURL)
 		return
 	}
 
@@ -52,6 +52,20 @@ func main() {
 		}
 
 	case "run":
+		runFlags := flag.NewFlagSet("run", flag.ContinueOnError)
+		hostFlag := runFlags.String("host", "", "Target host (default: 127.0.0.1)")
+		runFlags.StringVar(hostFlag, "H", "", "Target host (shorthand)")
+		portFlag := runFlags.Int("port", 0, "Target port (default: 8080)")
+		runFlags.IntVar(portFlag, "p", 0, "Target port (shorthand)")
+
+		// run フラグ以外のプロンプト引数・M4引数を抽出
+		if err := runFlags.Parse(subArgs); err != nil {
+			os.Exit(1)
+		}
+		remainingArgs := runFlags.Args()
+
+		baseURL := resolveBaseURL(*hostFlag, *portFlag)
+
 		ctx := context.Background()
 		db, err := sqlite3.NewDB(dbPath)
 		if err != nil {
@@ -60,23 +74,29 @@ func main() {
 		}
 		defer db.Close()
 
-		baseURL := os.Getenv("LLAMA_SERVER_URL")
-		if baseURL == "" {
-			baseURL = "http://127.0.0.1:8080"
-		}
-
 		expander := infram4.NewExpander()
 		llmClient := llamaserver.NewClient(baseURL, 120*time.Second)
 		historyRepo := sqlite3.NewHistoryRepository(db)
 		queryUC := usecase.NewQueryLLMUseCase(expander, llmClient, historyRepo)
 
-		if err := cli.RunPromptCommand(ctx, queryUC, subArgs); err != nil {
+		if err := cli.RunPromptCommand(ctx, queryUC, remainingArgs); err != nil {
 			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 			os.Exit(1)
 		}
 
 	case "tui":
-		runTUI(dbPath, templateDir)
+		tuiFlags := flag.NewFlagSet("tui", flag.ContinueOnError)
+		hostFlag := tuiFlags.String("host", "", "Target host (default: 127.0.0.1)")
+		tuiFlags.StringVar(hostFlag, "H", "", "Target host (shorthand)")
+		portFlag := tuiFlags.Int("port", 0, "Target port (default: 8080)")
+		tuiFlags.IntVar(portFlag, "p", 0, "Target port (shorthand)")
+
+		if err := tuiFlags.Parse(subArgs); err != nil {
+			os.Exit(1)
+		}
+
+		baseURL := resolveBaseURL(*hostFlag, *portFlag)
+		runTUI(dbPath, templateDir, baseURL)
 
 	default:
 		printUsage()
@@ -84,7 +104,42 @@ func main() {
 	}
 }
 
-func runTUI(dbPath, templateDir string) {
+// resolveBaseURL はフラグ、環境変数、デフォルト値からエンドポイントURLを解決します
+func resolveBaseURL(host string, port int) string {
+	rawURL := os.Getenv("LLAMA_SERVER_URL")
+	if rawURL == "" {
+		rawURL = "http://127.0.0.1:8080"
+	}
+
+	u, err := url.Parse(rawURL)
+	if err != nil {
+		u = &url.URL{
+			Scheme: "http",
+			Host:   "127.0.0.1:8080",
+		}
+	}
+
+	currHost := u.Hostname()
+	currPort := u.Port()
+
+	if host != "" {
+		currHost = host
+	}
+	if port != 0 {
+		currPort = fmt.Sprintf("%d", port)
+	}
+
+	if currPort != "" {
+		u.Host = fmt.Sprintf("%s:%s", currHost, currPort)
+	} else {
+		u.Host = currHost
+	}
+
+	// 末尾スラッシュをトリム
+	return strings.TrimRight(u.String(), "/")
+}
+
+func runTUI(dbPath, templateDir, baseURL string) {
 	ctx := context.Background()
 	db, err := sqlite3.NewDB(dbPath)
 	if err != nil {
@@ -92,11 +147,6 @@ func runTUI(dbPath, templateDir string) {
 		os.Exit(1)
 	}
 	defer db.Close()
-
-	baseURL := os.Getenv("LLAMA_SERVER_URL")
-	if baseURL == "" {
-		baseURL = "http://127.0.0.1:8080"
-	}
 
 	expander := infram4.NewExpander()
 	llmClient := llamaserver.NewClient(baseURL, 120*time.Second)
@@ -114,7 +164,10 @@ func runTUI(dbPath, templateDir string) {
 func printUsage() {
 	fmt.Println("Usage: m4llama [subcommand] [flags] [args]")
 	fmt.Println("\nSubcommands:")
-	fmt.Println("  tui   Start interactive keyboard-driven cockpit (Default when no args given)")
-	fmt.Println("  m4    Run pure-Go standalone POSIX m4 macro processor")
-	fmt.Println("  run   Expand prompt template and execute local LLM inference")
+	fmt.Println("  tui  [-H host] [-p port]   Start interactive cockpit (Default when no args given)")
+	fmt.Println("  m4   [m4-args...]           Run pure-Go standalone POSIX m4 macro processor")
+	fmt.Println("  run  [-H host] [-p port]    Expand prompt template and execute local LLM inference")
+	fmt.Println("\nFlags:")
+	fmt.Println("  -H, --host string   Llama server host (default: 127.0.0.1 or LLAMA_SERVER_URL)")
+	fmt.Println("  -p, --port int      Llama server port (default: 8080 or LLAMA_SERVER_URL)")
 }
