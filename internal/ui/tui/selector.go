@@ -10,7 +10,7 @@ import (
 	"github.com/charmbracelet/lipgloss"
 )
 
-// ScanTemplates は指定されたルート群から .m4 ファイルを再帰スキャンし、重複を排除して返します
+// ScanTemplates は指定されたルート群から .m4 ファイルをスキャンし、フルパスのリストを返します
 func ScanTemplates(roots ...string) ([]string, error) {
 	seen := make(map[string]bool)
 	var templates []string
@@ -25,7 +25,6 @@ func ScanTemplates(roots ...string) ([]string, error) {
 				return err
 			}
 			if !info.IsDir() && strings.HasSuffix(info.Name(), ".m4") {
-				// パスを正規化して重複判定
 				cleanPath := filepath.Clean(path)
 				if !seen[cleanPath] {
 					seen[cleanPath] = true
@@ -42,21 +41,26 @@ func ScanTemplates(roots ...string) ([]string, error) {
 	return templates, nil
 }
 
-type selectorModel struct {
-	allTemplates []string
-	filtered     []string
-	query        string
-	cursor       int
-	selected     string
-	quitting     bool
-	canceled     bool
+type TemplateItem struct {
+	Display  string // セレクターに表示する相対パス
+	FullPath string // 実際のフルパス
 }
 
-func initialSelectorModel(templates []string) selectorModel {
+type selectorModel struct {
+	items    []TemplateItem
+	filtered []TemplateItem
+	query    string
+	cursor   int
+	selected string
+	quitting bool
+	canceled bool
+}
+
+func initialSelectorModel(items []TemplateItem) selectorModel {
 	return selectorModel{
-		allTemplates: templates,
-		filtered:     templates,
-		cursor:       0,
+		items:    items,
+		filtered: items,
+		cursor:   0,
 	}
 }
 
@@ -75,7 +79,7 @@ func (m selectorModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 		case tea.KeyEnter:
 			if len(m.filtered) > 0 && m.cursor < len(m.filtered) {
-				m.selected = m.filtered[m.cursor]
+				m.selected = m.filtered[m.cursor].FullPath
 			}
 			m.quitting = true
 			return m, tea.Quit
@@ -107,7 +111,30 @@ func (m selectorModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 }
 
 func (m *selectorModel) updateFiltered() {
-	m.filtered = FuzzyRank(m.query, m.allTemplates)
+	if m.query == "" {
+		m.filtered = m.items
+		m.cursor = 0
+		return
+	}
+
+	displays := make([]string, len(m.items))
+	for i, it := range m.items {
+		displays[i] = it.Display
+	}
+
+	ranked := FuzzyRank(m.query, displays)
+	m.filtered = make([]TemplateItem, 0, len(ranked))
+
+	displayMap := make(map[string]TemplateItem)
+	for _, it := range m.items {
+		displayMap[it.Display] = it
+	}
+
+	for _, d := range ranked {
+		if it, ok := displayMap[d]; ok {
+			m.filtered = append(m.filtered, it)
+		}
+	}
 	m.cursor = 0
 }
 
@@ -125,7 +152,7 @@ func (m selectorModel) View() string {
 	var s strings.Builder
 	s.WriteString(titleStyle.Render("m4llama Template Selection") + "\n")
 	s.WriteString(promptStyle.Render("> ") + m.query + "\n")
-	s.WriteString(countStyle.Render(fmt.Sprintf("[%d / %d matches]", len(m.filtered), len(m.allTemplates))) + "\n\n")
+	s.WriteString(countStyle.Render(fmt.Sprintf("[%d / %d matches]", len(m.filtered), len(m.items))) + "\n\n")
 
 	maxDisplay := 10
 	start := 0
@@ -138,11 +165,11 @@ func (m selectorModel) View() string {
 	}
 
 	for i := start; i < end; i++ {
-		path := m.filtered[i]
+		item := m.filtered[i]
 		if i == m.cursor {
-			s.WriteString(cursorStyle.Render(fmt.Sprintf(" > %s", path)) + "\n")
+			s.WriteString(cursorStyle.Render(fmt.Sprintf(" > %s", item.Display)) + "\n")
 		} else {
-			s.WriteString(itemStyle.Render(fmt.Sprintf("   %s", path)) + "\n")
+			s.WriteString(itemStyle.Render(fmt.Sprintf("   %s", item.Display)) + "\n")
 		}
 	}
 
@@ -152,16 +179,35 @@ func (m selectorModel) View() string {
 	return s.String()
 }
 
-// SelectTemplate は入力ごとに動的に Levenshtein 距離で絞り込まれる TUI セレクターを起動します
-func SelectTemplate(templates []string) (string, error) {
-	if len(templates) == 0 {
-		return "", fmt.Errorf("no .m4 templates found")
-	}
-	if len(templates) == 1 {
-		return templates[0], nil
+// SelectTemplate は WORKSPACE からの相対パスで表示し、選択された実パスを返します
+func SelectTemplate(baseDir string, specialOptions []string, fullPaths []string) (string, error) {
+	var items []TemplateItem
+
+	// 特殊オプション（[➕ Create New Template] など）
+	for _, opt := range specialOptions {
+		items = append(items, TemplateItem{
+			Display:  opt,
+			FullPath: opt,
+		})
 	}
 
-	p := tea.NewProgram(initialSelectorModel(templates))
+	// テンプレートパスを相対パス表示に変換
+	for _, p := range fullPaths {
+		display := p
+		if rel, err := filepath.Rel(baseDir, p); err == nil && !strings.HasPrefix(rel, "..") {
+			display = rel
+		}
+		items = append(items, TemplateItem{
+			Display:  display,
+			FullPath: p,
+		})
+	}
+
+	if len(items) == 0 {
+		return "", fmt.Errorf("no templates available")
+	}
+
+	p := tea.NewProgram(initialSelectorModel(items))
 	finalModel, err := p.Run()
 	if err != nil {
 		return "", fmt.Errorf("failed to run selector: %w", err)

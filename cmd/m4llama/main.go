@@ -21,9 +21,18 @@ func main() {
 		homeDir = "."
 	}
 	dbPath := filepath.Join(homeDir, ".local", "share", "m4llama", "history.db")
-	templateDir := filepath.Join(homeDir, ".config", "m4llama", "templates")
-	if _, err := os.Stat("templates"); err == nil {
-		templateDir = "templates"
+
+	// ワークスペースディレクトリの解決順序:
+	// 1. 環境変数 M4LLAMA_WORKSPACE
+	// 2. カレントディレクトリの templates/
+	// 3. ~/.config/m4llama/templates
+	templateDir := os.Getenv("M4LLAMA_WORKSPACE")
+	if templateDir == "" {
+		if _, err := os.Stat("templates"); err == nil {
+			templateDir = "templates"
+		} else {
+			templateDir = filepath.Join(homeDir, ".config", "m4llama", "templates")
+		}
 	}
 
 	// 引数なし起動はデフォルトで TUI を開始
