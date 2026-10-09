@@ -20,7 +20,7 @@ func RunPromptCommand(ctx context.Context, queryUC *usecase.QueryLLMUseCase, arg
 	dryRun := fs.Bool("dry-run", false, "Output curl command without sending inference request")
 	exportCurl := fs.Bool("export-curl", false, "Alias for --dry-run")
 
-	if err := fs.Parse(args); err != nil {
+	if err := fs.Parse(NormalizeDFlags(args)); err != nil {
 		return err
 	}
 

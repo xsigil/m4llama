@@ -14,7 +14,7 @@ func RunM4Command(args []string) error {
 	defines := make(MapFlag)
 	fs.Var(&defines, "D", "Define macro variable (e.g. -DNAME=VAL)")
 
-	if err := fs.Parse(args); err != nil {
+	if err := fs.Parse(NormalizeDFlags(args)); err != nil {
 		return err
 	}
 

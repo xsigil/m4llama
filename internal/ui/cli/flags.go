@@ -24,3 +24,18 @@ func (m MapFlag) Set(val string) error {
 	}
 	return nil
 }
+
+// NormalizeDFlags は -DVAR=VAL や --DVAR=VAL の形式を ["-D", "VAR=VAL"] に分割正規化します
+func NormalizeDFlags(args []string) []string {
+	var normalized []string
+	for _, arg := range args {
+		if strings.HasPrefix(arg, "-D") && len(arg) > 2 && arg[2] != '=' {
+			normalized = append(normalized, "-D", arg[2:])
+		} else if strings.HasPrefix(arg, "--D") && len(arg) > 3 && arg[3] != '=' {
+			normalized = append(normalized, "-D", arg[3:])
+		} else {
+			normalized = append(normalized, arg)
+		}
+	}
+	return normalized
+}
