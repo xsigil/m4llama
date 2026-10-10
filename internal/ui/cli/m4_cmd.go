@@ -6,7 +6,7 @@ import (
 	"io"
 	"os"
 
-	pkgm4 "github.com/xsigil/m4llama/pkg/m4"
+	"github.com/xsigil/go-safe-m4/pkg/engine"
 )
 
 func RunM4Command(args []string) error {
@@ -18,19 +18,18 @@ func RunM4Command(args []string) error {
 		return err
 	}
 
-	engine := pkgm4.NewEngine()
+	eng := engine.NewEngine()
 	for k, v := range defines {
-		engine.Define(k, v)
+		eng.Define(k, v)
 	}
 
 	files := fs.Args()
 	if len(files) == 0 {
-		// 標準入力から読み込み
 		input, err := io.ReadAll(os.Stdin)
 		if err != nil {
 			return fmt.Errorf("failed to read stdin: %w", err)
 		}
-		out, err := engine.Expand(string(input))
+		out, err := eng.Expand(string(input))
 		if err != nil {
 			return err
 		}
@@ -43,7 +42,7 @@ func RunM4Command(args []string) error {
 		if err != nil {
 			return fmt.Errorf("failed to read %s: %w", file, err)
 		}
-		out, err := engine.Expand(string(content))
+		out, err := eng.Expand(string(content))
 		if err != nil {
 			return fmt.Errorf("failed to process %s: %w", file, err)
 		}

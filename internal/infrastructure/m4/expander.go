@@ -5,15 +5,15 @@ import (
 	"fmt"
 	"strings"
 
-	pkgm4 "github.com/xsigil/m4llama/pkg/m4"
+	"github.com/xsigil/go-safe-m4/pkg/engine"
 )
 
 func (e *Expander) Expand(ctx context.Context, templateContent string, vars map[string]string) (string, error) {
-	engine := pkgm4.NewEngine()
+	eng := engine.NewEngine()
 
 	// 変数を m4 マクロとして事前に定義
 	for k, v := range vars {
-		engine.Define(k, v)
+		eng.Define(k, v)
 	}
 
 	// テンプレートヘッダーの注釈行 (# @var ...) を除外してから評価
@@ -33,7 +33,7 @@ func (e *Expander) Expand(ctx context.Context, templateContent string, vars map[
 	}
 
 	rawBody := strings.Join(bodyLines, "\n")
-	expanded, err := engine.Expand(rawBody)
+	expanded, err := eng.Expand(rawBody)
 	if err != nil {
 		return "", fmt.Errorf("failed to expand m4 template: %w", err)
 	}
