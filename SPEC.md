@@ -373,3 +373,174 @@ m4llama tui --stdout       # 1回リクエストを投げるとレスポンス�
 m4llama                    # デフォルト起動
 
 ```
+# Grammar Preset & In-Place Editor Workflow Specification
+
+## 1. コンセプト概要
+
+ユーザーが GBNF をゼロから記述することは基本的に想定しない。
+`m4llama` は組み込みの標準プリセット（HTTP, SMTP, Cypher, CSV, Pikchr 等）を保持し、CLI コマンドライン実行と対話型 TUI（Terminal User Interface）の両方で以下の 2 つのユースケースを提供する。
+
+1. **プリセットをそのまま適用**:
+   メニューや引数からプリセット名を選択し、推論リクエストの `grammar` に直接注入する。
+2. **プリセットをテンプレートとして微修正（`$EDITOR` 連携）**:
+   選択したプリセットを一時ファイル（`/tmp`）に展開し、外部エディタ（`$EDITOR`）を起動して編集。保存終了後に内容を即座にリクエストへ反映し、不要になった一時ファイルは自動クリーンアップする。
+
+---
+
+## 2. CLI インターフェース設計
+
+### オプション体系
+
+```bash
+# 1. プリセット一覧を表示
+m4llama --list-grammars
+
+# 2. プリセットをそのまま使って推論
+m4llama --grammar-preset http_request prompt.m4
+
+# 3. プリセットを /tmp に展開して $EDITOR で編集後に実行
+m4llama --grammar-preset http_request --edit-grammar prompt.m4
+
+# 4. プリセット未指定で --edit-grammar の場合は空テンプレートを開く
+m4llama --edit-grammar prompt.m4
+```
+
+* `-g, --grammar-preset <NAME>`: 組み込みプリセットを選択。
+* `-e, --edit-grammar`: 文法を一時ファイルに展開して外部エディタを起動。
+* `--list-grammars`: 利用可能な文法プリセット一覧を表示して終了。
+
+---
+
+## 3. TUI インターフェース設計
+
+対話型 TUI 画面では、プロンプト編集やモデル設定と並び、「GBNF 設定画面」をタブまたは専用モーダルとして提供する。
+
+### 画面レイアウトイメージ
+
+```
+┌─ [m4llama] Grammar Presets ──────────────────────────────────────────────┐
+│                                                                          │
+│  Select Grammar:                                  Preview:               │
+│  ┌─────────────────────────────────────┐  ┌───────────────────────────┐  │
+│  │ ( ) (None / Freeform)               │  │ root ::= auth-phase       │  │
+│  │ ( ) CSV (RFC 4180)                  │  │          "\r\n"            │  │
+│  │ ( ) HTTP Request (RFC 7230)         │  │          (transaction-cmd │  │
+│  │ (*) POP3 Session (RFC 1939)  [Edit] │  │          "\r\n")*         │  │
+│  │ ( ) SMTP Session (RFC 5321)         │  │          "QUIT\r\n"       │  │
+│  │ ( ) Cypher Query (openCypher)       │  │                           │  │
+│  │ ( ) Pikchr Diagram                  │  │ auth-phase ::=            │  │
+│  │ ( ) Custom (Edited in-memory)       │  │     user-pass-seq         │  │
+│  │                                     │  │     | apop-cmd            │  │
+│  └─────────────────────────────────────┘  └───────────────────────────┘  │
+│                                                                          │
+│  [↑/↓]: Move Cursor   [Space/Enter]: Select    [e]: Edit in $EDITOR      │
+│  [c]: Create from Scratch                      [q/Esc]: Close            │
+│                                                                          │
+│                 [ Apply & Return ]       [ Cancel ]                      │
+└──────────────────────────────────────────────────────────────────────────┘
+```
+
+### UI コンポーネントと動作仕様
+
+1. **プリセット選択メニュー（左ペイン）**:
+   * 利用可能な組み込みプリセットが一覧表示される。
+   * カーソルを合わせたプリセットの内容が、右ペインの「Preview」にリアルタイム表示される。
+   * 選択中（ラジオボタン `(*)`）の項目の横に **`[Edit]`** ボタンが表示される。
+
+2. **`[Edit]` ボタン / `e` キーの挙動**:
+   * フォーカス中のプリセット（または選択済みプリセット）を元に、一時ファイル `/tmp/m4llama_grammar_XXXXXX.gbnf` を作成。
+   * TUI の端末画面描画（curses / Notty 等の raw モード）を一時退避・サスペンド。
+   * `$EDITOR`（未設定時は `$VISUAL` -> `vi` / `nano`）を子プロセスとして前面で起動。
+   * ユーザーが編集を保存して終了（exit 0）すると、TUI 画面を再初期化・復帰。
+   * 編集された内容は「Custom (Edited in-memory)」として保持され、プレビューにも即時反映される。
+
+3. **編集ステータスの明示**:
+   * プリセットをベースに一度でも微修正を加えた場合、リスト末尾の `( ) Custom (Edited)` に自動でフォーカスが遷移し、どのプリセットから派生したかが表示される。
+
+---
+
+## 4. 処理フロー（TUI / CLI 共通）
+
+```
+[実行開始]
+   │
+   ├── TUI モードの場合
+   │      │
+   │      ├── メニューからプリセットを選択
+   │      ├── [Edit] または 'e' キー押下？
+   │      │      ├── NO: プリセットを確定してリクエスト準備へ
+   │      │      └── YES:
+   │      │            1. TUI 端末制御をサスペンド
+   │      │            2. 一時ファイル (/tmp/m4llama_grammar_XXXXXX.gbnf) に書き出し
+   │      │            3. $EDITOR を起動して待機
+   │      │            4. 編集完了後、一時ファイル内容をメモリに回収
+   │      │            5. 一時ファイルを削除
+   │      │            6. TUI 画面を復帰、カスタム文法として選択状態を更新
+   │      │
+   │      └── 推論実行ボタンでリクエスト送信
+   │
+   └── CLI モードの場合
+          │
+          ├── --grammar-preset でプリセット取得
+          ├── --edit-grammar 指定あり？
+          │      ├── NO: プリセットをそのままリクエストへ
+          │      └── YES: 一時ファイル作成 -> $EDITOR 実行 -> 回収・削除 -> リクエストへ
+          │
+          └── 推論リクエスト送信
+```
+
+---
+
+## 5. TUI サスペンドとエディタ復帰の実装方針 (OCaml)
+
+TUI ライブラリ（例: Notty, Lambda-term 等）使用時に外部エディタを呼ぶ場合、端末の Raw モード解除とシグナル制御を適切に行う。
+
+```ocaml
+let open_editor_from_tui (initial_content : string) (suspend_tui : unit -> unit) (resume_tui : unit -> unit) : string option =
+  let temp_path = Filename.temp_file "m4llama_grammar_" ".gbnf" in
+  let oc = open_out temp_path in
+  output_string oc initial_content;
+  close_out oc;
+
+  let editor =
+    match Sys.getenv_opt "EDITOR" with
+    | Some e when String.trim e <> "" -> e
+    | _ -> (
+        match Sys.getenv_opt "VISUAL" with
+        | Some v when String.trim v <> "" -> v
+        | _ -> "vi")
+  in
+
+  (* 1. TUI の端末制御を停止し、シェル標準モードに戻す *)
+  suspend_tui ();
+
+  (* 2. エディタを実行 *)
+  let cmd = Printf.sprintf "%s %s" editor (Filename.quote temp_path) in
+  let status = Sys.command cmd in
+
+  (* 3. TUI の画面制御を復帰させる *)
+  resume_tui ();
+
+  if status = 0 then (
+    let ic = open_in temp_path in
+    let len = in_channel_length ic in
+    let content = really_input_string ic len in
+    close_in ic;
+    (try Sys.remove temp_path with _ -> ());
+    Some content
+  ) else (
+    (try Sys.remove temp_path with _ -> ());
+    None
+  )
+```
+
+---
+
+## 6. 本設計のメリット
+
+1. **手軽さと柔軟性の両立**:
+   一覧から選ぶだけで済む場合はキー1つで完了し、1行だけルールを弄りたいときはメニュー横の `[Edit]` ボタン（または `e` キー）を押すだけで使い慣れたエディタが立ち上がる。
+2. **学習コストの削減**:
+   画面右側のプレビュー領域で、選んだプリセットがどのような構文ルールを持っているかを俯瞰しながら編集判断ができる。
+3. **ワークスペースの保全**:
+   編集差分はメモリあるいは推論リクエストに直結し、一時ファイルは自動消去されるため、作業ディレクトリを散らかさない。
