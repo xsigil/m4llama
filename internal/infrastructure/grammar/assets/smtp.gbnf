@@ -1,0 +1,32 @@
+# STREAMING_CHUNK:Defining SMTP client command sequence
+root ::= (greeting-or-noop "\r\n")* ehlo-cmd "\r\n" (mail-transaction "\r\n")* quit-cmd "\r\n"
+
+mail-transaction ::= mail-cmd "\r\n" (rcpt-cmd "\r\n")+ data-block
+
+greeting-or-noop ::= "NOOP" ( " " [^\r\n]+ )?
+                   | "RSET"
+
+ehlo-cmd ::= ("EHLO" | "HELO") " " (domain | address-literal)
+mail-cmd ::= "MAIL FROM:<" reverse-path ">" ( " " mail-param )*
+rcpt-cmd ::= "RCPT TO:<" forward-path ">" ( " " rcpt-param )*
+
+data-block ::= "DATA\r\n" message-content "\r\n.\r\n"
+
+quit-cmd ::= "QUIT"
+
+# STREAMING_CHUNK:Defining mailbox and payload structures
+reverse-path ::= mailbox | ""
+forward-path ::= mailbox
+
+mailbox ::= local-part "@" domain
+local-part ::= [a-zA-Z0-9!#$%&'*+/=?^_`{|}~.-]+ | "\"" [^"\\]* "\""
+domain ::= [a-zA-Z0-9.-]+
+address-literal ::= "\[" [0-9]{1,3} "." [0-9]{1,3} "." [0-9]{1,3} "." [0-9]{1,3} "\]"
+
+mail-param ::= [a-zA-Z0-9-]+ ("=" [a-zA-Z0-9_.~%=-]+)?
+rcpt-param ::= [a-zA-Z0-9-]+ ("=" [a-zA-Z0-9_.~%=-]+)?
+
+message-content ::= (header-lines "\r\n\r\n")? body-lines
+header-lines    ::= header-line ("\r\n" header-line)*
+header-line     ::= ("From: " [^\r\n]+ | "To: " [^\r\n]+ | "Subject: " [^\r\n]+ | "Date: " [^\r\n]+ | [a-zA-Z0-9-]+ ": " [^\r\n]+)
+body-lines      ::= [^\r\n.]+ ("\r\n" [^\r\n.]+)*

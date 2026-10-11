@@ -1,0 +1,40 @@
+# STREAMING_CHUNK:Defining SIP/2.0 Request syntax
+root ::= request-line "\r\n" (header-field "\r\n")+ "\r\n" body?
+
+request-line ::= method " " uri " SIP/2.0"
+
+method ::= "INVITE" | "ACK" | "OPTIONS" | "BYE" | "CANCEL" | "REGISTER"
+
+uri ::= ("sip:" | "sips:") (userinfo "@")? hostport uri-params?
+userinfo ::= [a-zA-Z0-9_.!~*'&=+$,;?/-]+ (":" [a-zA-Z0-9_.!~*'&=+$,;?/-]+)?
+hostport ::= host (":" [0-9]+)?
+host ::= [a-zA-Z0-9_.-]+
+uri-params ::= (";" [a-zA-Z0-9_.~%!$&'()*+,;=:@/-]+)+
+
+# STREAMING_CHUNK:Configuring mandatory and dialog headers
+header-field ::= via-hdr
+               | from-hdr
+               | to-hdr
+               | cseq-hdr
+               | call-id-hdr
+               | max-forwards-hdr
+               | contact-hdr
+               | content-type-hdr
+               | content-length-hdr
+               | generic-hdr
+
+via-hdr          ::= ("Via:" | "v:") " SIP/2.0/" ("UDP" | "TCP" | "TLS") " " hostport (";" [a-zA-Z0-9_.~%=-]+)*
+from-hdr         ::= ("From:" | "f:") " " name-addr (";tag=" [a-zA-Z0-9_-]+)? (";" [a-zA-Z0-9_.~%=-]+)*
+to-hdr           ::= ("To:" | "t:") " " name-addr (";tag=" [a-zA-Z0-9_-]+)? (";" [a-zA-Z0-9_.~%=-]+)*
+cseq-hdr         ::= "CSeq: " [0-9]+ " " method
+call-id-hdr      ::= ("Call-ID:" | "i:") " " [a-zA-Z0-9_.~%!$&'()*+,;=:@/-]+
+max-forwards-hdr ::= "Max-Forwards: " [0-9]+
+contact-hdr      ::= ("Contact:" | "m:") " " (name-addr | "*") (";" [a-zA-Z0-9_.~%=-]+)*
+content-type-hdr ::= ("Content-Type:" | "c:") " " ("application/sdp" | "application/json" | [a-zA-Z0-9_.-]+ "/" [a-zA-Z0-9_.-]+)
+content-length-hdr ::= ("Content-Length:" | "l:") " " [0-9]+
+generic-hdr      ::= [a-zA-Z0-9_-]+ ": " [^\r\n]+
+
+name-addr ::= (display-name? "<" uri ">") | uri
+display-name ::= "\"" [^"\r\n]* "\"" | [a-zA-Z0-9_.-]+
+
+body ::= [^\0]+

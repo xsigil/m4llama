@@ -1,0 +1,13 @@
+# STREAMING_CHUNK:Defining RFC 4180 CSV syntax
+root ::= (header "\r\n")? record ("\r\n" record)* ("\r\n")?
+
+header ::= name ("," name)*
+record ::= field ("," field)*
+
+name  ::= field
+field ::= escaped | non-escaped
+
+escaped     ::= "\"" (textdata | "," | "\r" | "\n" | "\"\"")* "\""
+non-escaped ::= textdata*
+
+textdata ::= [^",\r\n\0]

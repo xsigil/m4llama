@@ -1,0 +1,39 @@
+# STREAMING_CHUNK:Defining HTTP/1.1 Request syntax
+root ::= request-line "\r\n" (header-field "\r\n")+ "\r\n" body?
+
+request-line ::= method " " request-target " HTTP/1.1"
+
+method ::= "GET" | "HEAD" | "POST" | "PUT" | "DELETE" | "CONNECT" | "OPTIONS" | "TRACE" | "PATCH"
+
+request-target ::= origin-form | absolute-form | authority-form | asterisk-form
+origin-form    ::= absolute-path ("?" query)?
+absolute-form  ::= absolute-uri
+authority-form ::= hostport
+asterisk-form  ::= "*"
+
+absolute-path ::= ("/" [a-zA-Z0-9_.~%!$&'()*+,;=:@-]*)+
+query         ::= [a-zA-Z0-9_.~%!$&'()*+,;=:@/?-]*
+absolute-uri  ::= "http" "s"? "://" hostport (absolute-path ("?" query)?)?
+
+# STREAMING_CHUNK:Configuring HTTP header fields
+header-field ::= host-header
+               | content-type-header
+               | content-length-header
+               | connection-header
+               | user-agent-header
+               | accept-header
+               | generic-header
+
+host-header           ::= "Host: " hostport
+content-type-header   ::= "Content-Type: " media-type
+content-length-header ::= "Content-Length: " [0-9]+
+connection-header     ::= "Connection: " ("close" | "keep-alive" | "upgrade")
+user-agent-header     ::= "User-Agent: " [^\r\n]+
+accept-header         ::= "Accept: " [^\r\n]+
+generic-header        ::= [a-zA-Z0-9!#$%&'*+-.^_`|~]+ ": " [^\r\n]*
+
+hostport   ::= host (":" [0-9]+)?
+host       ::= [a-zA-Z0-9_.-]+ | "\[" [a-fA-F0-9:]+ "\]"
+media-type ::= [a-zA-Z0-9_.-]+ "/" [a-zA-Z0-9_.-]+ (";" [^\r\n]+)*
+
+body ::= [^\0]+
