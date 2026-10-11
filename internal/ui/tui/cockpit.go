@@ -15,6 +15,7 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 	"github.com/xsigil/m4llama/internal/domain/entity"
+	"github.com/xsigil/m4llama/internal/infrastructure/grammar"
 	infram4 "github.com/xsigil/m4llama/internal/infrastructure/m4"
 	"github.com/xsigil/m4llama/internal/usecase"
 )
@@ -24,6 +25,7 @@ type tabView int
 const (
 	tabHistory tabView = iota
 	tabTemplates
+	tabGrammar
 )
 
 type focusField int
@@ -69,7 +71,13 @@ type CockpitModel struct {
 	templateCursor int
 	activeTemplate string
 
-	// コンポーネント
+	// Grammar Presets & Editor state
+	grammarPresets     []grammar.Preset
+	grammarCursor      int
+	selectedPresetName string
+	customGrammar      string
+
+	// UI Components
 	filterInput     textinput.Model
 	chainInput      textinput.Model
 	fileActionInput textinput.Model
@@ -118,23 +126,28 @@ func NewCockpit(queryUC *usecase.QueryLLMUseCase, historyUC *usecase.HistoryQuer
 	hist, _ := historyUC.GetRecent(context.Background(), 100)
 	tree, _ := BuildTemplateTree(templateDir)
 
+	reg := grammar.GetRegistry()
+	presets := reg.List()
+
 	m := CockpitModel{
-		queryUC:         queryUC,
-		historyUC:       historyUC,
-		m4Expander:      expander,
-		templateDir:     templateDir,
-		stdoutMode:      stdoutMode,
-		currentTab:      tabHistory,
-		focus:           focusList,
-		historyEntries:  hist,
-		filteredHistory: hist,
-		treeItems:       tree,
-		filterInput:     fi,
-		chainInput:      ci,
-		fileActionInput: fai,
-		preview:         vp,
-		spinner:         sp,
-		selectedIndices: make(map[int64]SelectedInfo),
+		queryUC:            queryUC,
+		historyUC:          historyUC,
+		m4Expander:         expander,
+		templateDir:        templateDir,
+		stdoutMode:         stdoutMode,
+		currentTab:         tabHistory,
+		focus:              focusList,
+		historyEntries:     hist,
+		filteredHistory:    hist,
+		treeItems:          tree,
+		grammarPresets:     presets,
+		selectedPresetName: "", // default: None / Freeform
+		filterInput:        fi,
+		chainInput:         ci,
+		fileActionInput:    fai,
+		preview:            vp,
+		spinner:            sp,
+		selectedIndices:    make(map[int64]SelectedInfo),
 	}
 
 	for _, it := range tree {
@@ -314,7 +327,6 @@ func (m CockpitModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				return m, nil
 
 			case "y":
-				// プレビューフォーカス時にも y で Completion をクリップボードへコピー
 				if m.currentTab == tabHistory && len(m.filteredHistory) > 0 {
 					target := m.filteredHistory[m.historyCursor].Completion
 					if err := CopyToClipboard(target); err != nil {
@@ -366,7 +378,6 @@ func (m CockpitModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				return m, tea.Quit
 
 			case "y":
-				// History タブ: 選択中の Response (Completion) を wl-copy でクリップボードにコピー
 				if m.currentTab == tabHistory && len(m.filteredHistory) > 0 {
 					target := m.filteredHistory[m.historyCursor].Completion
 					if err := CopyToClipboard(target); err != nil {
@@ -377,7 +388,6 @@ func (m CockpitModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					return m, nil
 				}
 
-				// Templates タブ: Yazi風ファイルコピー (cp)
 				if m.currentTab == tabTemplates && len(m.treeItems) > 0 {
 					m.focus = focusFileAction
 					m.fileActionKind = actionCopy
@@ -402,9 +412,12 @@ func (m CockpitModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				return m, tea.Quit
 
 			case "tab":
-				if m.currentTab == tabHistory {
+				switch m.currentTab {
+				case tabHistory:
 					m.currentTab = tabTemplates
-				} else {
+				case tabTemplates:
+					m.currentTab = tabGrammar
+				case tabGrammar:
 					m.currentTab = tabHistory
 				}
 				m.filterInput.SetValue("")
@@ -457,6 +470,27 @@ func (m CockpitModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				}
 
 			case "e":
+				if m.currentTab == tabGrammar {
+					baseName, initialContent := m.getGrammarForEditing()
+					tmpPath, err := grammar.PrepareTempFile(baseName, initialContent)
+					if err != nil {
+						m.statusMsg = fmt.Sprintf("Error creating temp grammar: %v", err)
+						return m, nil
+					}
+					c := CreateEditorCmd(tmpPath)
+					return m, tea.ExecProcess(c, func(err error) tea.Msg {
+						defer os.Remove(tmpPath)
+						if err == nil {
+							if edited, readErr := os.ReadFile(tmpPath); readErr == nil {
+								m.customGrammar = string(edited)
+								m.selectedPresetName = "custom"
+								m.statusMsg = "Custom grammar updated from $EDITOR"
+							}
+						}
+						m.updatePreview()
+						return nil
+					})
+				}
 				if m.currentTab == tabHistory && len(m.filteredHistory) > 0 {
 					targetEntry := m.filteredHistory[m.historyCursor]
 					tmpPath, err := PrepareHistoryTempFile(targetEntry)
@@ -487,6 +521,11 @@ func (m CockpitModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				}
 
 			case " ":
+				if m.currentTab == tabGrammar {
+					m.selectGrammarAtCursor()
+					m.updatePreview()
+					return m, nil
+				}
 				if m.currentTab == tabHistory {
 					m.toggleHistorySelection()
 					return m, nil
@@ -499,6 +538,11 @@ func (m CockpitModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				}
 
 			case "enter":
+				if m.currentTab == tabGrammar {
+					m.selectGrammarAtCursor()
+					m.updatePreview()
+					return m, nil
+				}
 				if m.currentTab == tabTemplates {
 					if len(m.treeItems) > 0 && !m.treeItems[m.templateCursor].IsDir {
 						m.activeTemplate = m.treeItems[m.templateCursor].FullPath
@@ -520,6 +564,57 @@ func (m CockpitModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	}
 
 	return m, tea.Batch(cmds...)
+}
+
+func (m *CockpitModel) getGrammarItemsCount() int {
+	count := 1 + len(m.grammarPresets)
+	if m.customGrammar != "" {
+		count++
+	}
+	return count
+}
+
+func (m *CockpitModel) selectGrammarAtCursor() {
+	if m.grammarCursor == 0 {
+		m.selectedPresetName = ""
+		m.statusMsg = "Grammar: Disabled (Freeform)"
+		return
+	}
+	presetIdx := m.grammarCursor - 1
+	if presetIdx < len(m.grammarPresets) {
+		p := m.grammarPresets[presetIdx]
+		m.selectedPresetName = p.Name
+		m.statusMsg = fmt.Sprintf("Grammar: Applied preset %q", p.Title)
+		return
+	}
+	m.selectedPresetName = "custom"
+	m.statusMsg = "Grammar: Applied Custom (Edited)"
+}
+
+func (m *CockpitModel) getGrammarForEditing() (string, string) {
+	if m.grammarCursor == 0 {
+		return "scratch", "root ::= [^\\x00]+\n"
+	}
+	presetIdx := m.grammarCursor - 1
+	if presetIdx < len(m.grammarPresets) {
+		p := m.grammarPresets[presetIdx]
+		return p.Name, p.Content
+	}
+	return "custom", m.customGrammar
+}
+
+func (m *CockpitModel) getActiveGrammarContent() string {
+	if m.selectedPresetName == "" {
+		return ""
+	}
+	if m.selectedPresetName == "custom" {
+		return m.customGrammar
+	}
+	reg := grammar.GetRegistry()
+	if p, ok := reg.Get(m.selectedPresetName); ok {
+		return p.Content
+	}
+	return ""
 }
 
 func (m *CockpitModel) startInference() {
@@ -625,9 +720,13 @@ func (m *CockpitModel) cursorDown() {
 		if m.historyCursor < len(m.filteredHistory)-1 {
 			m.historyCursor++
 		}
-	} else {
+	} else if m.currentTab == tabTemplates {
 		if m.templateCursor < len(m.treeItems)-1 {
 			m.templateCursor++
+		}
+	} else if m.currentTab == tabGrammar {
+		if m.grammarCursor < m.getGrammarItemsCount()-1 {
+			m.grammarCursor++
 		}
 	}
 }
@@ -637,9 +736,13 @@ func (m *CockpitModel) cursorUp() {
 		if m.historyCursor > 0 {
 			m.historyCursor--
 		}
-	} else {
+	} else if m.currentTab == tabTemplates {
 		if m.templateCursor > 0 {
 			m.templateCursor--
+		}
+	} else if m.currentTab == tabGrammar {
+		if m.grammarCursor > 0 {
+			m.grammarCursor--
 		}
 	}
 }
@@ -722,7 +825,7 @@ func (m *CockpitModel) updatePreview() {
 			h.ID, h.CreatedAt.Format("2006-01-02 15:04:05"), h.TotalTokens, h.TemplateName, h.ExpandedPrompt, h.Completion)
 		m.preview.SetContent(content)
 		m.preview.GotoTop()
-	} else {
+	} else if m.currentTab == tabTemplates {
 		if len(m.treeItems) == 0 || m.templateCursor >= len(m.treeItems) {
 			m.preview.SetContent("No template.")
 			return
@@ -738,6 +841,22 @@ func (m *CockpitModel) updatePreview() {
 			return
 		}
 		m.preview.SetContent(fmt.Sprintf("[Template] %s\n\n%s", item.RelPath, string(bytes)))
+		m.preview.GotoTop()
+	} else if m.currentTab == tabGrammar {
+		if m.grammarCursor == 0 {
+			m.preview.SetContent("GBNF Constraint: Disabled\n\nLLM will generate freeform text output without grammar restrictions.")
+			m.preview.GotoTop()
+			return
+		}
+		presetIdx := m.grammarCursor - 1
+		if presetIdx < len(m.grammarPresets) {
+			p := m.grammarPresets[presetIdx]
+			m.preview.SetContent(fmt.Sprintf("Preset: %s (%s)\nDescription: %s\n\n=== GBNF PREVIEW ===\n%s",
+				p.Title, p.Name, p.Description, p.Content))
+			m.preview.GotoTop()
+			return
+		}
+		m.preview.SetContent(fmt.Sprintf("Custom Grammar (In-Memory / Edited)\n\n=== GBNF PREVIEW ===\n%s", m.customGrammar))
 		m.preview.GotoTop()
 	}
 }
@@ -781,6 +900,7 @@ func (m *CockpitModel) runInferenceStreamCmd(vars map[string]string) tea.Cmd {
 			Model:           "",
 			Temperature:     0.7,
 			MaxTokens:       4096,
+			Grammar:         m.getActiveGrammarContent(),
 		}, onToken)
 
 		return inferenceCompleteMsg{output: out, err: err}
@@ -810,16 +930,27 @@ func (m CockpitModel) View() string {
 
 	hTab := tabInactive.Render("1:History")
 	tTab := tabInactive.Render("2:Templates")
-	if m.currentTab == tabHistory {
+	gTab := tabInactive.Render("3:Grammar")
+	switch m.currentTab {
+	case tabHistory:
 		hTab = tabActive.Render("1:History")
-	} else {
+	case tabTemplates:
 		tTab = tabActive.Render("2:Templates")
+	case tabGrammar:
+		gTab = tabActive.Render("3:Grammar")
+	}
+
+	grammarBadgeText := "None"
+	if m.selectedPresetName == "custom" {
+		grammarBadgeText = "Custom"
+	} else if m.selectedPresetName != "" {
+		grammarBadgeText = m.selectedPresetName
 	}
 
 	activeBadge := lipgloss.NewStyle().Foreground(lipgloss.Color("220")).Render(
-		fmt.Sprintf("[Active: %s]", filepath.Base(m.activeTemplate)),
+		fmt.Sprintf("[Active: %s | GBNF: %s]", filepath.Base(m.activeTemplate), grammarBadgeText),
 	)
-	header := lipgloss.JoinHorizontal(lipgloss.Center, headerStyle.Render(" m4llama cockpit "), hTab, tTab, "  ", activeBadge)
+	header := lipgloss.JoinHorizontal(lipgloss.Center, headerStyle.Render(" m4llama cockpit "), hTab, tTab, gTab, "  ", activeBadge)
 
 	listWidth := m.width / 3
 	if listWidth < 35 {
@@ -855,7 +986,7 @@ func (m CockpitModel) View() string {
 				listContent.WriteString(lipgloss.NewStyle().Foreground(lipgloss.Color("250")).Render("  "+line) + "\n")
 			}
 		}
-	} else {
+	} else if m.currentTab == tabTemplates {
 		for i, it := range m.treeItems {
 			if i >= m.height-10 {
 				break
@@ -873,6 +1004,56 @@ func (m CockpitModel) View() string {
 
 			line := indent + prefix + name
 			if i == m.templateCursor {
+				listContent.WriteString(lipgloss.NewStyle().Foreground(lipgloss.Color("212")).Bold(true).Render("> "+line) + "\n")
+			} else {
+				listContent.WriteString(lipgloss.NewStyle().Foreground(lipgloss.Color("250")).Render("  "+line) + "\n")
+			}
+		}
+	} else if m.currentTab == tabGrammar {
+		noneRadio := "( )"
+		if m.selectedPresetName == "" {
+			noneRadio = "(*)"
+		}
+		noneLine := fmt.Sprintf("%s (None / Freeform)", noneRadio)
+		if m.grammarCursor == 0 {
+			listContent.WriteString(lipgloss.NewStyle().Foreground(lipgloss.Color("212")).Bold(true).Render("> "+noneLine) + "\n")
+		} else {
+			listContent.WriteString(lipgloss.NewStyle().Foreground(lipgloss.Color("250")).Render("  "+noneLine) + "\n")
+		}
+
+		for i, p := range m.grammarPresets {
+			itemIdx := 1 + i
+			if itemIdx >= m.height-10 {
+				break
+			}
+			radio := "( )"
+			if m.selectedPresetName == p.Name {
+				radio = "(*)"
+			}
+			editBtn := ""
+			if m.grammarCursor == itemIdx {
+				editBtn = " [Edit]"
+			}
+			line := fmt.Sprintf("%s %s%s", radio, p.Title, editBtn)
+			if itemIdx == m.grammarCursor {
+				listContent.WriteString(lipgloss.NewStyle().Foreground(lipgloss.Color("212")).Bold(true).Render("> "+line) + "\n")
+			} else {
+				listContent.WriteString(lipgloss.NewStyle().Foreground(lipgloss.Color("250")).Render("  "+line) + "\n")
+			}
+		}
+
+		if m.customGrammar != "" {
+			customIdx := 1 + len(m.grammarPresets)
+			radio := "( )"
+			if m.selectedPresetName == "custom" {
+				radio = "(*)"
+			}
+			editBtn := ""
+			if m.grammarCursor == customIdx {
+				editBtn = " [Edit]"
+			}
+			line := fmt.Sprintf("%s Custom (Edited)%s", radio, editBtn)
+			if customIdx == m.grammarCursor {
 				listContent.WriteString(lipgloss.NewStyle().Foreground(lipgloss.Color("212")).Bold(true).Render("> "+line) + "\n")
 			} else {
 				listContent.WriteString(lipgloss.NewStyle().Foreground(lipgloss.Color("250")).Render("  "+line) + "\n")
@@ -903,9 +1084,11 @@ func (m CockpitModel) View() string {
 		helpText = "[Preview Focus] [j/k] Scroll | [y] Yank to wl-copy | [d/u] Half Page | [g/G] Top/Bottom | [h/Esc] Back"
 	default:
 		if m.currentTab == tabHistory {
-			helpText = "[l/→] Preview | [y] Yank to wl-copy | [d] Delete | [e] Edit | [Space] Toggle | [c] Chain | [Enter] Run | [w] Quit"
+			helpText = "[l/→] Preview | [y] Yank | [d] Delete | [e] Edit | [Space] Toggle | [c] Chain | [Enter] Run"
+		} else if m.currentTab == tabTemplates {
+			helpText = "[l/→] Preview | [e] Edit | [m] Move | [y] Copy | [r/Space] Form & Run | [Enter] Select"
 		} else {
-			helpText = "[l/→] Preview | [e] Edit | [m] Move | [y] Copy | [r/Space] Form & Run | [Enter] Select | [w] Quit"
+			helpText = "[l/→] Preview | [e] Edit in $EDITOR | [Space/Enter] Apply Preset | [Tab] Next Tab"
 		}
 	}
 	if m.isInferring {

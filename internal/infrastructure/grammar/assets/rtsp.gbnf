@@ -1,0 +1,41 @@
+# STREAMING_CHUNK:Defining RTSP/1.0 Request syntax
+root ::= request-line "\r\n" (header-field "\r\n")+ "\r\n" body?
+
+request-line ::= method " " rtsp-url " RTSP/1.0"
+
+method ::= "DESCRIBE"
+         | "ANNOUNCE"
+         | "GET_PARAMETER"
+         | "OPTIONS"
+         | "PAUSE"
+         | "PLAY"
+         | "RECORD"
+         | "REDIRECT"
+         | "SETUP"
+         | "SET_PARAMETER"
+         | "TEARDOWN"
+
+rtsp-url ::= ("rtsp:" | "rtspu:") "//" host (":" [0-9]+)? abs-path?
+host     ::= [a-zA-Z0-9_.-]+
+abs-path ::= ("/" [a-zA-Z0-9_.~%!$&'()*+,;=:@-]*)+
+
+# STREAMING_CHUNK:Configuring RTSP streaming control headers
+header-field ::= cseq-hdr
+               | session-hdr
+               | transport-hdr
+               | range-hdr
+               | content-type-hdr
+               | content-length-hdr
+               | generic-hdr
+
+cseq-hdr           ::= "CSeq: " [0-9]+
+session-hdr        ::= "Session: " [a-zA-Z0-9_-]+ (";timeout=" [0-9]+)?
+transport-hdr      ::= "Transport: " transport-spec ("," transport-spec)*
+range-hdr          ::= "Range: " ("npt=" [0-9:.-]+ | "smpte=" [0-9:.-]+ | "clock=" [0-9TZ:.-]+)
+content-type-hdr   ::= "Content-Type: " [a-zA-Z0-9_.-]+ "/" [a-zA-Z0-9_.-]+
+content-length-hdr ::= "Content-Length: " [0-9]+
+generic-hdr        ::= [a-zA-Z0-9_-]+ ": " [^\r\n]+
+
+transport-spec ::= "RTP/AVP" ("/" ("UDP" | "TCP"))? (";" [a-zA-Z0-9_.~%=-]+)*
+
+body ::= [^\0]+

@@ -2,11 +2,11 @@ package main
 
 import (
 	"context"
-	"flag"
 	"fmt"
 	"net/url"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 
@@ -52,18 +52,9 @@ func main() {
 		}
 
 	case "run":
-		runFlags := flag.NewFlagSet("run", flag.ContinueOnError)
-		hostFlag := runFlags.String("host", "", "Target host (default: 127.0.0.1)")
-		runFlags.StringVar(hostFlag, "H", "", "Target host (shorthand)")
-		portFlag := runFlags.Int("port", 0, "Target port (default: 8080)")
-		runFlags.IntVar(portFlag, "p", 0, "Target port (shorthand)")
-
-		if err := runFlags.Parse(subArgs); err != nil {
-			os.Exit(1)
-		}
-		remainingArgs := runFlags.Args()
-
-		baseURL := resolveBaseURL(*hostFlag, *portFlag)
+		// -H/--host, -p/--port のみを先行抽出して残りを透過
+		host, port, remainingArgs := extractHostPort(subArgs)
+		baseURL := resolveBaseURL(host, port)
 
 		ctx := context.Background()
 		db, err := sqlite3.NewDB(dbPath)
@@ -78,31 +69,61 @@ func main() {
 		historyRepo := sqlite3.NewHistoryRepository(db)
 		queryUC := usecase.NewQueryLLMUseCase(expander, llmClient, historyRepo)
 
+		// --list-grammars, --grammar-preset, -D, --curl 等はすべてここで安全にパースされる
 		if err := cli.RunPromptCommand(ctx, queryUC, remainingArgs); err != nil {
 			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 			os.Exit(1)
 		}
 
 	case "tui":
-		tuiFlags := flag.NewFlagSet("tui", flag.ContinueOnError)
-		hostFlag := tuiFlags.String("host", "", "Target host (default: 127.0.0.1)")
-		tuiFlags.StringVar(hostFlag, "H", "", "Target host (shorthand)")
-		portFlag := tuiFlags.Int("port", 0, "Target port (default: 8080)")
-		tuiFlags.IntVar(portFlag, "p", 0, "Target port (shorthand)")
-		stdoutFlag := tuiFlags.Bool("stdout", false, "Output completion to stdout and exit on finish")
-		tuiFlags.BoolVar(stdoutFlag, "s", false, "Output completion to stdout (shorthand)")
-
-		if err := tuiFlags.Parse(subArgs); err != nil {
-			os.Exit(1)
+		host, port, remaining := extractHostPort(subArgs)
+		stdoutMode := false
+		for _, arg := range remaining {
+			if arg == "-s" || arg == "--stdout" {
+				stdoutMode = true
+			}
 		}
 
-		baseURL := resolveBaseURL(*hostFlag, *portFlag)
-		runTUI(dbPath, templateDir, baseURL, *stdoutFlag)
+		baseURL := resolveBaseURL(host, port)
+		runTUI(dbPath, templateDir, baseURL, stdoutMode)
 
 	default:
 		printUsage()
 		os.Exit(1)
 	}
+}
+
+// extractHostPort は subArgs から接続先フラグ (-H/--host, -p/--port) のみを抽出し、
+// その他のフラグ・引数は順番を保ったまま返します。
+func extractHostPort(args []string) (host string, port int, rest []string) {
+	for i := 0; i < len(args); i++ {
+		arg := args[i]
+		switch {
+		case arg == "-H" || arg == "--host":
+			if i+1 < len(args) {
+				host = args[i+1]
+				i++
+			}
+		case strings.HasPrefix(arg, "-H="):
+			host = strings.TrimPrefix(arg, "-H=")
+		case strings.HasPrefix(arg, "--host="):
+			host = strings.TrimPrefix(arg, "--host=")
+
+		case arg == "-p" || arg == "--port":
+			if i+1 < len(args) {
+				port, _ = strconv.Atoi(args[i+1])
+				i++
+			}
+		case strings.HasPrefix(arg, "-p="):
+			port, _ = strconv.Atoi(strings.TrimPrefix(arg, "-p="))
+		case strings.HasPrefix(arg, "--port="):
+			port, _ = strconv.Atoi(strings.TrimPrefix(arg, "--port="))
+
+		default:
+			rest = append(rest, arg)
+		}
+	}
+	return host, port, rest
 }
 
 func resolveBaseURL(host string, port int) string {
@@ -163,10 +184,17 @@ func runTUI(dbPath, templateDir, baseURL string, stdoutMode bool) {
 func printUsage() {
 	fmt.Println("Usage: m4llama [subcommand] [flags] [args]")
 	fmt.Println("\nSubcommands:")
-	fmt.Println("  tui  [-H host] [-p port] [-s]  Start interactive cockpit (Default when no args given)")
-	fmt.Println("  m4   [m4-args...]              Run pure-Go standalone POSIX m4 macro processor")
-	fmt.Println("  run  [-H host] [-p port]       Expand prompt template and execute local LLM inference")
-	fmt.Println("\nFlags:")
+	fmt.Println("  tui  [-H host] [-p port] [-s]                 Start interactive cockpit (Default when no args given)")
+	fmt.Println("  m4   [m4-args...]                             Run pure-Go standalone POSIX m4 macro processor")
+	fmt.Println("  run  [-H host] [-p port] [run-flags] [file]   Expand prompt template and execute local LLM inference")
+	fmt.Println("\nRun Flags:")
+	fmt.Println("  --list-grammars            List available GBNF grammar presets")
+	fmt.Println("  --grammar-preset <NAME>    Apply built-in GBNF grammar preset")
+	fmt.Println("  --grammar <PATH>           Apply custom GBNF grammar from file")
+	fmt.Println("  --edit-grammar             Open grammar in $EDITOR before sending request")
+	fmt.Println("  --curl                     Output curl payload without executing inference")
+	fmt.Println("  -D VAR=VAL                 Define m4 template variables")
+	fmt.Println("\nConnection Flags:")
 	fmt.Println("  -H, --host string   Llama server host (default: 127.0.0.1 or LLAMA_SERVER_URL)")
 	fmt.Println("  -p, --port int      Llama server port (default: 8080 or LLAMA_SERVER_URL)")
 	fmt.Println("  -s, --stdout        Output completion to stdout and exit on finish (tui only)")

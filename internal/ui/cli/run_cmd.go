@@ -5,8 +5,10 @@ import (
 	"flag"
 	"fmt"
 	"os"
+	"os/exec"
 	"strings"
 
+	"github.com/xsigil/m4llama/internal/infrastructure/grammar"
 	"github.com/xsigil/m4llama/internal/usecase"
 )
 
@@ -31,8 +33,23 @@ func RunPromptCommand(ctx context.Context, queryUC *usecase.QueryLLMUseCase, arg
 	maxTokens := fs.Int("max-tokens", -1, "Max tokens to generate (-1: unlimited)")
 	dryRun := fs.Bool("curl", false, "Output curl command without executing inference")
 
+	grammarFlag := fs.String("grammar", "", "Path to custom GBNF grammar file")
+	presetFlag := fs.String("grammar-preset", "", "Built-in grammar preset name (e.g. http_request, smtp_session)")
+	editGrammar := fs.Bool("edit-grammar", false, "Extract grammar to /tmp and edit in $EDITOR before inference")
+	listGrammars := fs.Bool("list-grammars", false, "List available built-in grammar presets")
+
 	if err := fs.Parse(NormalizeDFlags(args)); err != nil {
 		return err
+	}
+
+	reg := grammar.GetRegistry()
+
+	if *listGrammars {
+		fmt.Println("Available GBNF Grammar Presets:")
+		for _, p := range reg.List() {
+			fmt.Printf("  %-15s %s (%s)\n", p.Name, p.Title, p.Description)
+		}
+		return nil
 	}
 
 	rest := fs.Args()
@@ -44,6 +61,58 @@ func RunPromptCommand(ctx context.Context, queryUC *usecase.QueryLLMUseCase, arg
 	contentBytes, err := os.ReadFile(tmplPath)
 	if err != nil {
 		return fmt.Errorf("failed to read template: %w", err)
+	}
+
+	// 文法指定の解決
+	var grammarContent string
+	var grammarBaseName string
+
+	if *presetFlag != "" {
+		p, ok := reg.Get(*presetFlag)
+		if !ok {
+			return fmt.Errorf("unknown grammar preset: %q (use --list-grammars)", *presetFlag)
+		}
+		grammarContent = p.Content
+		grammarBaseName = p.Name
+	} else if *grammarFlag != "" {
+		b, err := os.ReadFile(*grammarFlag)
+		if err != nil {
+			return fmt.Errorf("failed to read grammar file: %w", err)
+		}
+		grammarContent = string(b)
+		grammarBaseName = "custom"
+	}
+
+	// -e / --edit-grammar オプション処理 ($EDITOR 起動)
+	if *editGrammar {
+		tmpPath, err := grammar.PrepareTempFile(grammarBaseName, grammarContent)
+		if err != nil {
+			return err
+		}
+		defer os.Remove(tmpPath)
+
+		editor := os.Getenv("EDITOR")
+		if editor == "" {
+			editor = os.Getenv("VISUAL")
+			if editor == "" {
+				editor = "vi"
+			}
+		}
+
+		cmd := exec.Command(editor, tmpPath)
+		cmd.Stdin = os.Stdin
+		cmd.Stdout = os.Stdout
+		cmd.Stderr = os.Stderr
+
+		if err := cmd.Run(); err != nil {
+			return fmt.Errorf("editor exited with error: %w", err)
+		}
+
+		editedBytes, err := os.ReadFile(tmpPath)
+		if err != nil {
+			return fmt.Errorf("failed to read edited grammar: %w", err)
+		}
+		grammarContent = string(editedBytes)
 	}
 
 	variables := make(map[string]string)
@@ -64,6 +133,7 @@ func RunPromptCommand(ctx context.Context, queryUC *usecase.QueryLLMUseCase, arg
 		Temperature:     *temp,
 		MaxTokens:       *maxTokens,
 		DryRunCurl:      *dryRun,
+		Grammar:         grammarContent,
 	})
 	if err != nil {
 		return err

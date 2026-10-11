@@ -18,6 +18,7 @@ type QueryLLMInput struct {
 	MaxTokens       int
 	DryRunCurl      bool
 	CustomMessages  []entity.Message
+	Grammar         string // GBNF 制約構文
 }
 
 type QueryLLMOutput struct {
@@ -89,6 +90,7 @@ func (uc *QueryLLMUseCase) ExecuteStream(ctx context.Context, in QueryLLMInput, 
 		MaxTokens:   maxTokens,
 		Stream:      (onToken != nil),
 		Messages:    reqMessages,
+		Grammar:     in.Grammar,
 	}
 
 	if in.DryRunCurl {

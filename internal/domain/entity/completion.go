@@ -19,6 +19,7 @@ type CompletionRequest struct {
 	Temperature float64   `json:"temperature,omitempty"`
 	MaxTokens   int       `json:"max_tokens,omitempty"`
 	Stream      bool      `json:"stream"`
+	Grammar     string    `json:"grammar,omitempty"` // llama-server 向け GBNF 制約
 }
 
 type Message struct {
