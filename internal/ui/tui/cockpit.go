@@ -37,6 +37,7 @@ const (
 	focusChain
 	focusFileAction
 	focusDeleteConfirm
+	focusTemplateDeleteConfirm
 )
 
 type fileActionMode int
@@ -45,6 +46,7 @@ const (
 	actionNone fileActionMode = iota
 	actionMove
 	actionCopy
+	actionCreate
 )
 
 type CockpitModel struct {
@@ -67,9 +69,10 @@ type CockpitModel struct {
 	targetDeleteID  int64
 
 	// Templates
-	treeItems      []TreeItem
-	templateCursor int
-	activeTemplate string
+	treeItems            []TreeItem
+	templateCursor       int
+	activeTemplate       string
+	targetDeleteTemplate string
 
 	// Grammar Presets & Editor state
 	grammarPresets     []grammar.Preset
@@ -271,6 +274,45 @@ func (m CockpitModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 			return m, nil
 
+		case focusTemplateDeleteConfirm:
+			switch msg.String() {
+			case "y", "Y", "enter":
+				if m.targetDeleteTemplate != "" {
+					err := DeleteTemplate(m.targetDeleteTemplate)
+					if err != nil {
+						m.statusMsg = fmt.Sprintf("Delete failed: %v", err)
+					} else {
+						m.statusMsg = fmt.Sprintf("Deleted: %s", filepath.Base(m.targetDeleteTemplate))
+						if m.activeTemplate == m.targetDeleteTemplate {
+							m.activeTemplate = ""
+						}
+						m.treeItems, _ = BuildTemplateTree(m.templateDir)
+						if m.templateCursor >= len(m.treeItems) && m.templateCursor > 0 {
+							m.templateCursor--
+						}
+						if len(m.treeItems) > 0 && m.activeTemplate == "" {
+							for _, it := range m.treeItems {
+								if !it.IsDir {
+									m.activeTemplate = it.FullPath
+									break
+								}
+							}
+						}
+						m.updatePreview()
+					}
+				}
+				m.focus = focusList
+				m.targetDeleteTemplate = ""
+				return m, nil
+
+			case "n", "N", "esc", "q":
+				m.focus = focusList
+				m.targetDeleteTemplate = ""
+				m.statusMsg = "Deletion canceled"
+				return m, nil
+			}
+			return m, nil
+
 		case focusFilter:
 			switch msg.Type {
 			case tea.KeyEsc, tea.KeyEnter:
@@ -305,10 +347,28 @@ func (m CockpitModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.fileActionKind = actionNone
 				return m, nil
 			case tea.KeyEnter:
-				m.executeFileAction()
+				wasCreate := (m.fileActionKind == actionCreate)
+				createdPath := m.executeFileAction()
 				m.focus = focusList
 				m.fileActionInput.Blur()
 				m.fileActionKind = actionNone
+
+				// 新規作成時は即座にエディタを起動し、編集終了後も新ファイルを選択状態にする
+				if wasCreate && createdPath != "" {
+					c := CreateEditorCmd(createdPath)
+					return m, tea.ExecProcess(c, func(err error) tea.Msg {
+						m.treeItems, _ = BuildTemplateTree(m.templateDir)
+						for i, it := range m.treeItems {
+							if it.FullPath == createdPath {
+								m.templateCursor = i
+								m.activeTemplate = createdPath
+								break
+							}
+						}
+						m.updatePreview()
+						return nil
+					})
+				}
 				return m, nil
 			}
 			var cmd tea.Cmd
@@ -397,10 +457,34 @@ func (m CockpitModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					return m, nil
 				}
 
+			case "n":
+				if m.currentTab == tabTemplates {
+					m.focus = focusFileAction
+					m.fileActionKind = actionCreate
+					m.fileActionInput.Prompt = "New template (.m4): "
+					suggestedPrefix := ""
+					if len(m.treeItems) > 0 && m.treeItems[m.templateCursor].IsDir {
+						suggestedPrefix = m.treeItems[m.templateCursor].RelPath + "/"
+					} else if len(m.treeItems) > 0 {
+						dir := filepath.Dir(m.treeItems[m.templateCursor].RelPath)
+						if dir != "." && dir != "" {
+							suggestedPrefix = dir + "/"
+						}
+					}
+					m.fileActionInput.SetValue(suggestedPrefix)
+					m.fileActionInput.Focus()
+					return m, nil
+				}
+
 			case "d":
 				if m.currentTab == tabHistory && len(m.filteredHistory) > 0 {
 					m.targetDeleteID = m.filteredHistory[m.historyCursor].ID
 					m.focus = focusDeleteConfirm
+					return m, nil
+				}
+				if m.currentTab == tabTemplates && len(m.treeItems) > 0 {
+					m.targetDeleteTemplate = m.treeItems[m.templateCursor].FullPath
+					m.focus = focusTemplateDeleteConfirm
 					return m, nil
 				}
 
@@ -625,35 +709,65 @@ func (m *CockpitModel) startInference() {
 	m.preview.SetContent("⚡ Connecting and generating...")
 }
 
-func (m *CockpitModel) executeFileAction() {
-	if len(m.treeItems) == 0 {
-		return
-	}
-	src := m.treeItems[m.templateCursor].FullPath
+func (m *CockpitModel) executeFileAction() string {
 	targetRel := strings.TrimSpace(m.fileActionInput.Value())
 	if targetRel == "" {
-		return
+		return ""
 	}
-	dst := filepath.Join(m.templateDir, targetRel)
 
+	// 自動で .m4 拡張子を補完
+	if m.fileActionKind == actionCreate && !strings.HasSuffix(targetRel, ".m4") && !strings.HasSuffix(targetRel, "/") {
+		targetRel += ".m4"
+	}
+
+	dst := filepath.Join(m.templateDir, targetRel)
 	var err error
-	if m.fileActionKind == actionMove {
-		err = MoveFile(src, dst)
+
+	switch m.fileActionKind {
+	case actionCreate:
+		err = CreateTemplateFile(dst)
 		if err == nil {
-			m.statusMsg = fmt.Sprintf("Moved: %s", targetRel)
+			m.statusMsg = fmt.Sprintf("Created: %s", targetRel)
+			m.activeTemplate = dst
 		}
-	} else if m.fileActionKind == actionCopy {
-		err = CopyFile(src, dst)
-		if err == nil {
-			m.statusMsg = fmt.Sprintf("Copied: %s", targetRel)
+
+	case actionMove:
+		if len(m.treeItems) > 0 {
+			src := m.treeItems[m.templateCursor].FullPath
+			err = MoveFile(src, dst)
+			if err == nil {
+				m.statusMsg = fmt.Sprintf("Moved: %s", targetRel)
+				if m.activeTemplate == src {
+					m.activeTemplate = dst
+				}
+			}
+		}
+
+	case actionCopy:
+		if len(m.treeItems) > 0 {
+			src := m.treeItems[m.templateCursor].FullPath
+			err = CopyFile(src, dst)
+			if err == nil {
+				m.statusMsg = fmt.Sprintf("Copied: %s", targetRel)
+			}
 		}
 	}
+
 	if err != nil {
 		m.statusMsg = fmt.Sprintf("Error: %v", err)
-	} else {
-		m.treeItems, _ = BuildTemplateTree(m.templateDir)
-		m.updatePreview()
+		return ""
 	}
+
+	m.treeItems, _ = BuildTemplateTree(m.templateDir)
+	// 作成・変更されたテンプレートにカーソルを合わせる
+	for i, it := range m.treeItems {
+		if it.FullPath == dst {
+			m.templateCursor = i
+			break
+		}
+	}
+	m.updatePreview()
+	return dst
 }
 
 func (m *CockpitModel) triggerFormAndRun() tea.Cmd {
@@ -827,12 +941,12 @@ func (m *CockpitModel) updatePreview() {
 		m.preview.GotoTop()
 	} else if m.currentTab == tabTemplates {
 		if len(m.treeItems) == 0 || m.templateCursor >= len(m.treeItems) {
-			m.preview.SetContent("No template.")
+			m.preview.SetContent("No templates found in workspace.\nPress [n] to create your first template.")
 			return
 		}
 		item := m.treeItems[m.templateCursor]
 		if item.IsDir {
-			m.preview.SetContent(fmt.Sprintf("Directory: %s", item.RelPath))
+			m.preview.SetContent(fmt.Sprintf("Directory: %s\n\n[n] Create template in this directory\n[d] Delete directory", item.RelPath))
 			return
 		}
 		bytes, err := os.ReadFile(item.FullPath)
@@ -1078,7 +1192,7 @@ func (m CockpitModel) View() string {
 
 	var helpText string
 	switch m.focus {
-	case focusDeleteConfirm:
+	case focusDeleteConfirm, focusTemplateDeleteConfirm:
 		helpText = "Confirm Deletion: [y] Yes, Delete | [n/Esc] Cancel"
 	case focusPreview:
 		helpText = "[Preview Focus] [j/k] Scroll | [y] Yank to wl-copy | [d/u] Half Page | [g/G] Top/Bottom | [h/Esc] Back"
@@ -1086,7 +1200,7 @@ func (m CockpitModel) View() string {
 		if m.currentTab == tabHistory {
 			helpText = "[l/→] Preview | [y] Yank | [d] Delete | [e] Edit | [Space] Toggle | [c] Chain | [Enter] Run"
 		} else if m.currentTab == tabTemplates {
-			helpText = "[l/→] Preview | [e] Edit | [m] Move | [y] Copy | [r/Space] Form & Run | [Enter] Select"
+			helpText = "[n] New | [e] Edit | [d] Delete | [m] Move | [y] Copy | [r/Space] Form & Run | [Enter] Select"
 		} else {
 			helpText = "[l/→] Preview | [e] Edit in $EDITOR | [Space/Enter] Apply Preset | [Tab] Next Tab"
 		}
@@ -1115,6 +1229,24 @@ func (m CockpitModel) View() string {
 			Padding(1, 3).
 			Align(lipgloss.Center, lipgloss.Center).
 			Render(fmt.Sprintf("⚠️  Delete History #%d?\n\nThis operation cannot be undone.\n\n[y] Yes, Delete   [n] Cancel", m.targetDeleteID))
+
+		return lipgloss.Place(
+			m.width,
+			m.height,
+			lipgloss.Center,
+			lipgloss.Center,
+			modalBox,
+			lipgloss.WithWhitespaceChars(" "),
+		)
+	}
+
+	if m.focus == focusTemplateDeleteConfirm {
+		modalBox := lipgloss.NewStyle().
+			Border(lipgloss.DoubleBorder()).
+			BorderForeground(lipgloss.Color("196")).
+			Padding(1, 3).
+			Align(lipgloss.Center, lipgloss.Center).
+			Render(fmt.Sprintf("⚠️  Delete Template:\n%s\n\nThis will permanently delete the file/directory.\n\n[y] Yes, Delete   [n] Cancel", filepath.Base(m.targetDeleteTemplate)))
 
 		return lipgloss.Place(
 			m.width,

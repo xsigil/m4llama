@@ -1,6 +1,7 @@
 package tui
 
 import (
+	"fmt"
 	"io"
 	"os"
 	"path/filepath"
@@ -15,6 +16,7 @@ type TreeItem struct {
 	Name     string
 }
 
+// BuildTemplateTree scans the root template directory and returns all items hierarchically
 func BuildTemplateTree(rootDir string) ([]TreeItem, error) {
 	var items []TreeItem
 
@@ -64,6 +66,7 @@ func BuildTemplateTree(rootDir string) ([]TreeItem, error) {
 	return items, err
 }
 
+// MoveFile moves or renames a template file or directory
 func MoveFile(src, dst string) error {
 	if err := os.MkdirAll(filepath.Dir(dst), 0755); err != nil {
 		return err
@@ -71,6 +74,7 @@ func MoveFile(src, dst string) error {
 	return os.Rename(src, dst)
 }
 
+// CopyFile copies a template file
 func CopyFile(src, dst string) error {
 	if err := os.MkdirAll(filepath.Dir(dst), 0755); err != nil {
 		return err
@@ -91,4 +95,39 @@ func CopyFile(src, dst string) error {
 		return err
 	}
 	return out.Sync()
+}
+
+// CreateTemplateFile creates a new .m4 template file with initial boilerplate
+func CreateTemplateFile(targetPath string) error {
+	if err := os.MkdirAll(filepath.Dir(targetPath), 0755); err != nil {
+		return fmt.Errorf("failed to create directory: %w", err)
+	}
+
+	if _, err := os.Stat(targetPath); err == nil {
+		return fmt.Errorf("file already exists: %s", filepath.Base(targetPath))
+	}
+
+	initialBoilerplate := `# @var TASK [string] "Instruction or task for LLM" "Summarize the text"
+# @var STYLE [select:formal,casual,bullet_points] "Output style" "formal"
+#
+You are a helpful and precise assistant.
+Task: TASK
+Style: STYLE
+
+`
+
+	return os.WriteFile(targetPath, []byte(initialBoilerplate), 0644)
+}
+
+// DeleteTemplate removes a template file or directory
+func DeleteTemplate(targetPath string) error {
+	info, err := os.Stat(targetPath)
+	if err != nil {
+		return err
+	}
+
+	if info.IsDir() {
+		return os.RemoveAll(targetPath)
+	}
+	return os.Remove(targetPath)
 }
