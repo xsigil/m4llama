@@ -119,7 +119,15 @@ Style: STYLE
 	return os.WriteFile(targetPath, []byte(initialBoilerplate), 0644)
 }
 
-// DeleteTemplate removes a template file or directory
+// CreateTemplateDir creates a new directory inside the template workspace
+func CreateTemplateDir(targetPath string) error {
+	if _, err := os.Stat(targetPath); err == nil {
+		return fmt.Errorf("directory already exists: %s", filepath.Base(targetPath))
+	}
+	return os.MkdirAll(targetPath, 0755)
+}
+
+// DeleteTemplate removes a template file or directory (recursively if directory)
 func DeleteTemplate(targetPath string) error {
 	info, err := os.Stat(targetPath)
 	if err != nil {

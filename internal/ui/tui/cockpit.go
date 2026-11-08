@@ -47,6 +47,7 @@ const (
 	actionMove
 	actionCopy
 	actionCreate
+	actionCreateDir
 )
 
 type CockpitModel struct {
@@ -73,6 +74,7 @@ type CockpitModel struct {
 	templateCursor       int
 	activeTemplate       string
 	targetDeleteTemplate string
+	targetDeleteIsDir    bool
 
 	// Grammar Presets & Editor state
 	grammarPresets     []grammar.Preset
@@ -282,8 +284,13 @@ func (m CockpitModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					if err != nil {
 						m.statusMsg = fmt.Sprintf("Delete failed: %v", err)
 					} else {
-						m.statusMsg = fmt.Sprintf("Deleted: %s", filepath.Base(m.targetDeleteTemplate))
-						if m.activeTemplate == m.targetDeleteTemplate {
+						typeName := "file"
+						if m.targetDeleteIsDir {
+							typeName = "directory"
+						}
+						m.statusMsg = fmt.Sprintf("Deleted %s: %s", typeName, filepath.Base(m.targetDeleteTemplate))
+
+						if m.activeTemplate == m.targetDeleteTemplate || strings.HasPrefix(m.activeTemplate, m.targetDeleteTemplate+string(filepath.Separator)) {
 							m.activeTemplate = ""
 						}
 						m.treeItems, _ = BuildTemplateTree(m.templateDir)
@@ -303,11 +310,13 @@ func (m CockpitModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				}
 				m.focus = focusList
 				m.targetDeleteTemplate = ""
+				m.targetDeleteIsDir = false
 				return m, nil
 
 			case "n", "N", "esc", "q":
 				m.focus = focusList
 				m.targetDeleteTemplate = ""
+				m.targetDeleteIsDir = false
 				m.statusMsg = "Deletion canceled"
 				return m, nil
 			}
@@ -353,7 +362,7 @@ func (m CockpitModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.fileActionInput.Blur()
 				m.fileActionKind = actionNone
 
-				// 新規作成時は即座にエディタを起動し、編集終了後も新ファイルを選択状態にする
+				// 新規ファイル作成時は即座にエディタを起動し、編集終了後も新ファイルを選択状態にする
 				if wasCreate && createdPath != "" {
 					c := CreateEditorCmd(createdPath)
 					return m, tea.ExecProcess(c, func(err error) tea.Msg {
@@ -448,7 +457,7 @@ func (m CockpitModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					return m, nil
 				}
 
-				if m.currentTab == tabTemplates && len(m.treeItems) > 0 {
+				if m.currentTab == tabTemplates && len(m.treeItems) > 0 && !m.treeItems[m.templateCursor].IsDir {
 					m.focus = focusFileAction
 					m.fileActionKind = actionCopy
 					m.fileActionInput.Prompt = "Copy to: "
@@ -476,6 +485,25 @@ func (m CockpitModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					return m, nil
 				}
 
+			case "K":
+				if m.currentTab == tabTemplates {
+					m.focus = focusFileAction
+					m.fileActionKind = actionCreateDir
+					m.fileActionInput.Prompt = "New Directory: "
+					suggestedPrefix := ""
+					if len(m.treeItems) > 0 && m.treeItems[m.templateCursor].IsDir {
+						suggestedPrefix = m.treeItems[m.templateCursor].RelPath + "/"
+					} else if len(m.treeItems) > 0 {
+						dir := filepath.Dir(m.treeItems[m.templateCursor].RelPath)
+						if dir != "." && dir != "" {
+							suggestedPrefix = dir + "/"
+						}
+					}
+					m.fileActionInput.SetValue(suggestedPrefix)
+					m.fileActionInput.Focus()
+					return m, nil
+				}
+
 			case "d":
 				if m.currentTab == tabHistory && len(m.filteredHistory) > 0 {
 					m.targetDeleteID = m.filteredHistory[m.historyCursor].ID
@@ -483,7 +511,9 @@ func (m CockpitModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					return m, nil
 				}
 				if m.currentTab == tabTemplates && len(m.treeItems) > 0 {
-					m.targetDeleteTemplate = m.treeItems[m.templateCursor].FullPath
+					item := m.treeItems[m.templateCursor]
+					m.targetDeleteTemplate = item.FullPath
+					m.targetDeleteIsDir = item.IsDir
 					m.focus = focusTemplateDeleteConfirm
 					return m, nil
 				}
@@ -547,8 +577,13 @@ func (m CockpitModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				if m.currentTab == tabTemplates && len(m.treeItems) > 0 {
 					m.focus = focusFileAction
 					m.fileActionKind = actionMove
-					m.fileActionInput.Prompt = "Move/Rename to: "
-					m.fileActionInput.SetValue(m.treeItems[m.templateCursor].RelPath)
+					item := m.treeItems[m.templateCursor]
+					promptText := "Move/Rename file to: "
+					if item.IsDir {
+						promptText = "Move/Rename directory to: "
+					}
+					m.fileActionInput.Prompt = promptText
+					m.fileActionInput.SetValue(item.RelPath)
 					m.fileActionInput.Focus()
 					return m, nil
 				}
@@ -715,9 +750,14 @@ func (m *CockpitModel) executeFileAction() string {
 		return ""
 	}
 
-	// 自動で .m4 拡張子を補完
+	// 自動で .m4 拡張子を補完（ファイル作成時）
 	if m.fileActionKind == actionCreate && !strings.HasSuffix(targetRel, ".m4") && !strings.HasSuffix(targetRel, "/") {
 		targetRel += ".m4"
+	}
+
+	// ディレクトリ作成時の末尾スラッシュ除去
+	if m.fileActionKind == actionCreateDir {
+		targetRel = strings.TrimRight(targetRel, "/")
 	}
 
 	dst := filepath.Join(m.templateDir, targetRel)
@@ -727,24 +767,41 @@ func (m *CockpitModel) executeFileAction() string {
 	case actionCreate:
 		err = CreateTemplateFile(dst)
 		if err == nil {
-			m.statusMsg = fmt.Sprintf("Created: %s", targetRel)
+			m.statusMsg = fmt.Sprintf("Created file: %s", targetRel)
 			m.activeTemplate = dst
+		}
+
+	case actionCreateDir:
+		err = CreateTemplateDir(dst)
+		if err == nil {
+			m.statusMsg = fmt.Sprintf("Created directory: %s", targetRel)
 		}
 
 	case actionMove:
 		if len(m.treeItems) > 0 {
-			src := m.treeItems[m.templateCursor].FullPath
+			item := m.treeItems[m.templateCursor]
+			src := item.FullPath
 			err = MoveFile(src, dst)
 			if err == nil {
-				m.statusMsg = fmt.Sprintf("Moved: %s", targetRel)
+				typeName := "file"
+				if item.IsDir {
+					typeName = "directory"
+				}
+				m.statusMsg = fmt.Sprintf("Moved %s: %s", typeName, targetRel)
 				if m.activeTemplate == src {
 					m.activeTemplate = dst
+				} else if strings.HasPrefix(m.activeTemplate, src+string(filepath.Separator)) {
+					// 移動されたディレクトリ内のアクティブテンプレートのパスを追従更新
+					rel, relErr := filepath.Rel(src, m.activeTemplate)
+					if relErr == nil {
+						m.activeTemplate = filepath.Join(dst, rel)
+					}
 				}
 			}
 		}
 
 	case actionCopy:
-		if len(m.treeItems) > 0 {
+		if len(m.treeItems) > 0 && !m.treeItems[m.templateCursor].IsDir {
 			src := m.treeItems[m.templateCursor].FullPath
 			err = CopyFile(src, dst)
 			if err == nil {
@@ -759,7 +816,7 @@ func (m *CockpitModel) executeFileAction() string {
 	}
 
 	m.treeItems, _ = BuildTemplateTree(m.templateDir)
-	// 作成・変更されたテンプレートにカーソルを合わせる
+	// 作成・変更されたテンプレート（ファイルまたはディレクトリ）にカーソルを合わせる
 	for i, it := range m.treeItems {
 		if it.FullPath == dst {
 			m.templateCursor = i
@@ -941,12 +998,12 @@ func (m *CockpitModel) updatePreview() {
 		m.preview.GotoTop()
 	} else if m.currentTab == tabTemplates {
 		if len(m.treeItems) == 0 || m.templateCursor >= len(m.treeItems) {
-			m.preview.SetContent("No templates found in workspace.\nPress [n] to create your first template.")
+			m.preview.SetContent("No templates found in workspace.\nPress [n] to create a template, or [K] to create a directory.")
 			return
 		}
 		item := m.treeItems[m.templateCursor]
 		if item.IsDir {
-			m.preview.SetContent(fmt.Sprintf("Directory: %s\n\n[n] Create template in this directory\n[d] Delete directory", item.RelPath))
+			m.preview.SetContent(fmt.Sprintf("Directory: %s\n\nActions:\n  [n] Create template in this directory\n  [K] Create sub-directory\n  [m] Move or Rename directory\n  [d] Delete directory (recursively)", item.RelPath))
 			return
 		}
 		bytes, err := os.ReadFile(item.FullPath)
@@ -1200,7 +1257,7 @@ func (m CockpitModel) View() string {
 		if m.currentTab == tabHistory {
 			helpText = "[l/→] Preview | [y] Yank | [d] Delete | [e] Edit | [Space] Toggle | [c] Chain | [Enter] Run"
 		} else if m.currentTab == tabTemplates {
-			helpText = "[n] New | [e] Edit | [d] Delete | [m] Move | [y] Copy | [r/Space] Form & Run | [Enter] Select"
+			helpText = "[n] New File | [K] New Dir | [e] Edit | [d] Delete | [m] Move/Rename | [y] Copy | [r/Space] Form & Run | [Enter] Select"
 		} else {
 			helpText = "[l/→] Preview | [e] Edit in $EDITOR | [Space/Enter] Apply Preset | [Tab] Next Tab"
 		}
@@ -1241,12 +1298,19 @@ func (m CockpitModel) View() string {
 	}
 
 	if m.focus == focusTemplateDeleteConfirm {
+		typeName := "Template File"
+		warningDetail := "This will permanently delete the file."
+		if m.targetDeleteIsDir {
+			typeName = "Directory"
+			warningDetail = "⚠️ WARNING: This will RECURSIVELY delete the directory and ALL files inside it!"
+		}
+
 		modalBox := lipgloss.NewStyle().
 			Border(lipgloss.DoubleBorder()).
 			BorderForeground(lipgloss.Color("196")).
 			Padding(1, 3).
 			Align(lipgloss.Center, lipgloss.Center).
-			Render(fmt.Sprintf("⚠️  Delete Template:\n%s\n\nThis will permanently delete the file/directory.\n\n[y] Yes, Delete   [n] Cancel", filepath.Base(m.targetDeleteTemplate)))
+			Render(fmt.Sprintf("⚠️  Delete %s:\n%s\n\n%s\n\n[y] Yes, Delete   [n] Cancel", typeName, filepath.Base(m.targetDeleteTemplate), warningDetail))
 
 		return lipgloss.Place(
 			m.width,
